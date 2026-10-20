@@ -1,0 +1,17 @@
+.venv/
+.local/
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+coverage.xml
+.coverage
+deploy/compose.synology.yaml
+.dart_tool/
+**/.dart_tool/
+**/build/
+
