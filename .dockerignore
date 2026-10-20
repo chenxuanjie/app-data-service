@@ -1,0 +1,13 @@
+**
+!Dockerfile
+!pyproject.toml
+!alembic.ini
+!requirements-runtime.lock
+!.docker-wheels/
+!.docker-wheels/*.whl
+!src/
+!src/**
+!migrations/
+!migrations/**
+**/__pycache__/
+**/*.pyc

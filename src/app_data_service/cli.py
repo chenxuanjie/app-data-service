@@ -16,7 +16,7 @@ from app_data_service.config import database_url, make_engine
 from app_data_service.expenses import ExpenseImportPlan
 from app_data_service.store import import_expenses, user_transaction
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get("APP_DATA_PROJECT_ROOT", Path(__file__).resolve().parents[2])).resolve()
 
 
 def local_config() -> dict:

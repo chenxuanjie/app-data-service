@@ -97,16 +97,9 @@ def lock_dataset(connection: Connection, dataset_id: str) -> None:
     )
 
 
-def current_record(connection: Connection, dataset_id: str, record_id: str):
-    return (
-        connection.execute(
-            sa.select(Expense)
-            .where(Expense.id == record_id, Expense.dataset_id == dataset_id)
-            .with_for_update()
-        )
-        .mappings()
-        .one_or_none()
-    )
+def current_record(connection: Connection, dataset_id: str, record_id: str, *, lock: bool = True):
+    query = sa.select(Expense).where(Expense.id == record_id, Expense.dataset_id == dataset_id)
+    return connection.execute(query.with_for_update() if lock else query).mappings().one_or_none()
 
 
 def snapshot(row) -> dict | None:

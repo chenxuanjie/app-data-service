@@ -1,6 +1,6 @@
 # Flutter 应用数据服务
 
-已完成 PostgreSQL 基础，正在验证 PowerSync + FastAPI 最小同步链路，优先服务折日。
+已完成 PostgreSQL 基础、PowerSync + FastAPI 容器链路与折日独立同步测试入口。
 应用以离线使用为主，服务器负责同步；本项目不要求手机直接连接 PostgreSQL。
 
 已实现：
@@ -13,7 +13,9 @@
 - FastAPI 的 RS256/JWKS 验证、短期同步令牌、幂等上传、冲突双方版本与选择 API。
 - PowerSync 1.27.0 + PostgreSQL bucket 存储的本地真实链路实验，包含两个同账号客户端及另一个账号。
 
-当前没有：DSM 登录接入、折日正式客户端接入、生产数据迁移、备份、共享账本或管理后台。
+已加入 DSM 登录、会话刷新/退出、单入口同步网关、四服务自包含 Compose 和镜像导入包。
+本地完整 Docker 验证使用严格 TLS DSM 替身；真实 DSM 和 NAS 部署仍待验收。
+当前没有：折日正式业务切换、生产数据迁移、备份、共享账本或管理后台。
 `seed-demo` 只创建本地测试身份，不代表通过了 DSM 登录验证。
 Git 按 [Git Flow](docs/git-flow.md) 开发：`main` / `develop` / `feature/*`。
 PostgreSQL 基础已在 `feature/postgres-foundation` 提交并合入 `develop`；
@@ -72,6 +74,10 @@ Docker 必须先运行。部分 WSL 配置在无前台 Linux 命令时会停止�
 
 ## 群晖部署配置
 
+本阶段请使用 [群晖测试部署与验收](docs/synology-test.md) 的完整服务包。
+其中包含 PostgreSQL、一次性迁移、API 和 PowerSync，不需要在 NAS 安装 Python。
+下面保留的 `render_synology.py` 是早期仅数据库配置，不用于本轮完整同步测试。
+
 ```powershell
 .venv\Scripts\python tools/render_synology.py --data-directory /volume1/docker/app-data-service/postgres
 ```
@@ -127,7 +133,7 @@ docker pull journeyapps/powersync-service:1.27.0
 占用时明确报错，不停止其他程序。只绑定回环地址，不启动折日 Web 预览。
 工具生成随机签名密钥和临时应用令牌；没有“提交任意用户 ID 就登录”的 HTTP 端点。
 PowerSync 实验使用静态公钥，避免容器访问宿主机的额外网络配置；正常服务配置
-保留 JWKS URI。正式身份必须通过现有 DSM 会话验证后换取应用令牌，尚未接入。
+保留 JWKS URI。正式服务已提供 DSM 验证后换取应用会话的路径；此旧探测工具仍使用维护端测试身份。
 
 验证：离线新增与连续编辑 → 关闭重开 → API 上传 → PostgreSQL 逻辑复制 →
 另一个 SQLite 客户端。还模拟已提交响应丢失、重复上传、同条记录两端并发、
@@ -140,5 +146,13 @@ PowerSync 实验使用静态公钥，避免容器访问宿主机的额外网络�
 
 手动运行 API 的环境契约和上传规则见 [同步 API](docs/sync-api.md)。
 该实验不是折日的最终数据层，也不是已交付的群晖一键安装包。
+
+## 完整容器验证与交付
+
+`tools/render_stack.py` 生成完整测试配置，`tools/build_docker_bundle.py` 构建镜像、
+导出三个镜像到同一 TAR、重新导入并运行 `tools/verify_stack.py`。只有验证通过才替换交付文件。
+验证器使用随机隔离的容器、卷、数据库及严格 TLS DSM 替身，不访问真实 NAS。
+API 镜像以 UID 10001 运行，构建上下文不含 `.local`、密钥或本地数据库。
+本次具体文件、重建方法和手动验收步骤见 [群晖测试部署与验收](docs/synology-test.md)。
 
 参见 [数据字典](docs/database.md)、[同步 API](docs/sync-api.md) 与 [验证状态](docs/validation.md)。

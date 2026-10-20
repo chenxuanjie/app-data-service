@@ -155,3 +155,18 @@ class ExpenseConflict(Base):
     resolution: Mapped[str | None] = mapped_column(sa.Text)
     resolved_version: Mapped[int | None] = mapped_column(sa.BigInteger)
     resolved_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+
+
+class AppSession(Base):
+    __tablename__ = "app_sessions"
+    __table_args__ = {"schema": "core"}
+
+    id: Mapped[UUID] = mapped_column(sa.Uuid, primary_key=True)
+    user_id: Mapped[str] = mapped_column(sa.ForeignKey("core.users.id"))
+    refresh_hash: Mapped[str] = mapped_column(sa.Text)
+    dsm_context: Mapped[str] = mapped_column(sa.Text)
+    expires_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )

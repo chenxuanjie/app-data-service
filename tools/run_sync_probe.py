@@ -182,6 +182,7 @@ def run() -> None:
             )
         environment = {
             **os.environ,
+            "APP_DATA_AUTH_MODE": "probe",
             "APP_DATA_DATABASE_URL": source_urls["runtime"],
             "APP_DATA_SIGNING_KEY": str(key_path),
             "APP_DATA_ISSUER": authority.issuer,

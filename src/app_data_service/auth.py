@@ -32,7 +32,9 @@ class TokenAuthority:
             "use": "sig",
         }
 
-    def issue(self, user_id: str, audience: str, *, seconds: int = 300) -> str:
+    def issue(
+        self, user_id: str, audience: str, *, seconds: int = 300, extra: dict | None = None
+    ) -> str:
         now = datetime.now(UTC)
         return jwt.encode(
             {
@@ -41,13 +43,14 @@ class TokenAuthority:
                 "aud": audience,
                 "iat": now,
                 "exp": now + timedelta(seconds=seconds),
+                **(extra or {}),
             },
             self.key,
             algorithm="RS256",
             headers={"kid": self.kid},
         )
 
-    def verify(self, token: str) -> str:
+    def claims(self, token: str, *, audience: str = API_AUDIENCE, maximum_age: int = 3600) -> dict:
         header = jwt.get_unverified_header(token)
         if header.get("kid") != self.kid:
             raise jwt.InvalidTokenError("Unknown signing key")
@@ -55,7 +58,7 @@ class TokenAuthority:
             token,
             self.key.public_key(),
             algorithms=["RS256"],
-            audience=API_AUDIENCE,
+            audience=audience,
             issuer=self.issuer,
             options={"require": ["exp", "iat", "sub", "iss", "aud"], "strict_aud": True},
         )
@@ -64,6 +67,9 @@ class TokenAuthority:
             raise jwt.InvalidTokenError("Invalid subject")
         if type(claims["exp"]) is not int or type(claims["iat"]) is not int:
             raise jwt.InvalidTokenError("Timestamps must be integers")
-        if not 0 < claims["exp"] - claims["iat"] <= 3600:
+        if not 0 < claims["exp"] - claims["iat"] <= maximum_age:
             raise jwt.InvalidTokenError("Token lifetime exceeds one hour")
-        return actor
+        return claims
+
+    def verify(self, token: str) -> str:
+        return self.claims(token)["sub"]

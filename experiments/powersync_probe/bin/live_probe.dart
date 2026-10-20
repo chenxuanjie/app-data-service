@@ -27,6 +27,8 @@ Future<void> main(List<String> args) async {
     schema: expenseSchema,
     path: '$directory${Platform.pathSeparator}$name.sqlite',
   );
+  final aliceDataset = (config['datasets']?['alice'] as String?) ?? 'alice-data';
+  final bobDataset = (config['datasets']?['bob'] as String?) ?? 'bob-data';
   var a = database('alice-a');
   final b = database('alice-b');
   final bob = database('bob');
@@ -35,9 +37,9 @@ Future<void> main(List<String> args) async {
     config['tokens'][user] as String,
     dataset,
   );
-  final ca = connector('alice', 'alice-data');
-  final cb = connector('alice', 'alice-data');
-  final cc = connector('bob', 'bob-data');
+  final ca = connector('alice', aliceDataset);
+  final cb = connector('alice', aliceDataset);
+  final cc = connector('bob', bobDataset);
   final record = <String, dynamic>{
     'id': 'live-existing-id',
     'name': '离线套餐',
@@ -55,7 +57,7 @@ Future<void> main(List<String> args) async {
   final checks = <String>[];
   try {
     await Future.wait([a.initialize(), b.initialize(), bob.initialize()]);
-    await saveExpense(a, 'alice-data', record);
+    await saveExpense(a, aliceDataset, record);
     final clientId = await a.getClientId();
     await a.close();
     a = database('alice-a');
@@ -66,7 +68,7 @@ Future<void> main(List<String> args) async {
     );
     check((await a.getUploadQueueStats()).count == 1, 'Offline queue lost');
     record['name'] = '离线连续编辑';
-    await saveExpense(a, 'alice-data', record);
+    await saveExpense(a, aliceDataset, record);
     checks.add('offline_restart_and_chained_edits');
 
     await Future.wait([b.connect(connector: cb), bob.connect(connector: cc)]);
@@ -100,9 +102,9 @@ Future<void> main(List<String> args) async {
     );
     await Future.wait([a.disconnect(), b.disconnect()]);
     record['name'] = '设备甲版本';
-    await saveExpense(a, 'alice-data', record);
+    await saveExpense(a, aliceDataset, record);
     record['name'] = '设备乙版本';
-    await saveExpense(b, 'alice-data', record);
+    await saveExpense(b, aliceDataset, record);
     await a.connect(connector: ca);
     await drain(a);
     await until(() async => (await row(a))?['row_version'] == 3, 'A version 3');
@@ -113,7 +115,7 @@ Future<void> main(List<String> args) async {
       'conflict retained',
     );
     final response = await cb.request(
-      '/v1/conflicts?dataset_id=alice-data',
+      '/v1/conflicts?dataset_id=${Uri.encodeQueryComponent(aliceDataset)}',
       get: true,
     );
     final conflicts = response['conflicts'] as List;
@@ -134,7 +136,7 @@ Future<void> main(List<String> args) async {
     checks.add('concurrent_versions_retained_and_choice_replicated');
 
     await b.disconnect();
-    await saveExpense(b, 'alice-data', record, delete: true);
+    await saveExpense(b, aliceDataset, record, delete: true);
     check((await row(b))?['deleted_at'] != null, 'Offline delete not saved');
     await b.connect(connector: cb);
     await drain(b);
