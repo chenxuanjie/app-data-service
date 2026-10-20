@@ -5,17 +5,17 @@
 
 ## 交付文件
 
-新交付目录为 `release/docker-linux-amd64/`，其中三个镜像分别压缩，不再使用旧的一体 TAR：
+交付文件直接放在 `release/` 根目录，使用三个简短名称；校验报告集中放在“校验信息”子目录：
 
 | 文件 | 用途 |
 | --- | --- |
-| app-data-service-api-linux-amd64.tar.gz | API及一次性迁移镜像，后续业务更新主要替换它 |
-| postgres-linux-amd64.tar.gz | PostgreSQL 17.11；首次安装或数据库版本升级时导入 |
-| powersync-linux-amd64.tar.gz | PowerSync 1.27.0；首次安装或同步服务版本升级时导入 |
+| API服务.tar.gz | API及一次性迁移镜像，后续业务更新主要替换它 |
+| PostgreSQL.tar.gz | PostgreSQL 17.11；首次安装或数据库版本升级时导入 |
+| PowerSync.tar.gz | PowerSync 1.27.0；首次安装或同步服务版本升级时导入 |
 | docker-compose.yml | 四服务完整配置；内含随机密码及私钥，私下保存 |
-| release.json / checksums.sha256 | 每个分包的标签、镜像ID、大小、SHA-256及来源记录 |
-| validation.json | 从分包重新导入后的完整本地链路验证，DSM为严格TLS替身 |
-| 部署与验收.md | 本文的随包副本 |
+| 校验信息/release.json / checksums.sha256 | 每个分包的标签、镜像ID、大小、SHA-256及来源记录 |
+| 校验信息/validation.json | 从分包重新导入后的完整本地链路验证，DSM为严格TLS替身 |
+| 部署说明.md | 本文的随包副本 |
 
 每个tar.gz都是一个可独立导入的完整Docker镜像，不能当成三个文件分卷，也不需要先合并。
 同一镜像解压后与原包的镜像ID一致，配置中的密码、密钥和端口保留。
@@ -23,7 +23,8 @@
 `app-data-service:0.1.0-06f014f-dirty-20261020033655`，另两个标签为
 `postgres:17.11-bookworm`、`journeyapps/powersync-service:1.27.0`。
 原始构建的dirty标记保留，release.json分别记录运行代码来源与重新打包来源。
-旧的 `release/app-data-service-linux-amd64-images.tar` 及旧reports仅作历史交付记录，不再用于本轮部署。
+旧的一体TAR、reports和冗余交付目录已清理。镜像架构、版本和摘要记录在校验信息中，不再堆在包名里。
+在release根目录执行 `sha256sum -c 校验信息/checksums.sha256` 可核对三个文件。
 
 折日 APK 位于 `C:/Study/MyCode/MyProject/zheri/release/zheri-0.10.22+57.apk`。
 本次仅生成本地文件，没有上传到 WebDAV 或更新远程 OTA。
@@ -93,8 +94,9 @@ Windows 安装包和浏览器实际运行尚待后续验证，本轮不能据此
 ## 后续更新方式
 
 - 首次安装：导入三个分包，再用同目录Compose新建项目。
-- 只更新API业务：交付 `release/docker-linux-amd64-api-update/`，其中只有API分包、匹配Compose、校验与验收记录。
-  NAS已有的PostgreSQL/PowerSync镜像标签必须与release.json一致；无需重新传输这两个未变化的依赖。
+- 只更新API业务：仍使用同一个release目录，传输API服务.tar.gz、匹配Compose和必要说明即可。
+  本地保留未变化的PostgreSQL和PowerSync分包，不复制第二套目录；校验信息/release.json的updatedArchives列出本次更新文件。
+  NAS已有的两个依赖镜像标签须与记录一致，无需重复传输。
 - 导入新的API分包后，用配套Compose更新原项目，重新执行migrate并重建api；
   用界面确认迁移退出0、api健康及powersync恢复。不要勾选删除数据库数据或重建空目录。
 - 保留已有部署的密码、签名密钥、身份命名空间与数据目录。开发机必须使用相同私有Compose生成更新包；
@@ -106,13 +108,13 @@ Windows 安装包和浏览器实际运行尚待后续验证，本轮不能据此
 只重新压缩当前已验证的镜像，不重新构建：
 
 ```powershell
-.venv\Scripts\python tools/build_docker_bundle.py --compose release/reports/docker-linux-amd64/docker-compose.yml --reuse-existing release/reports/docker-linux-amd64/release.json --docker wsl --dart C:/Users/win10/tools/flutter/bin/dart.bat
+.venv\Scripts\python tools/build_docker_bundle.py --compose release/docker-compose.yml --reuse-existing release/校验信息/release.json --docker wsl --dart C:/Users/win10/tools/flutter/bin/dart.bat
 ```
 
 后续构建新API并只交付API更新包（Docker已有匹配的两个依赖镜像）：
 
 ```powershell
-.venv\Scripts\python tools/build_docker_bundle.py --compose release/docker-linux-amd64/docker-compose.yml --api-only --docker wsl --dart C:/Users/win10/tools/flutter/bin/dart.bat
+.venv\Scripts\python tools/build_docker_bundle.py --compose release/docker-compose.yml --api-only --docker wsl --dart C:/Users/win10/tools/flutter/bin/dart.bat
 ```
 
 不传`--reuse-existing`会构建当前源码；不传`--api-only`交付完整三个分包。

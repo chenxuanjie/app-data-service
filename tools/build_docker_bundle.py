@@ -215,13 +215,15 @@ def main():
         raise ValueError("Existing image IDs no longer match the validated release")
     delivery = staging / "delivery"
     delivery.mkdir()
+    details = delivery / "校验信息"
+    details.mkdir()
     archives = []
     names = ["app-data-service-api", "postgres", "powersync"]
     for index, (name, tag, identity) in enumerate(zip(names, images, image_ids, strict=True)):
         if args.api_only and index != 0:
             continue
         raw = staging / (name + ".tar")
-        filename = name + "-linux-amd64.tar.gz"
+        filename = ["API服务.tar.gz", "PostgreSQL.tar.gz", "PowerSync.tar.gz"][index]
         compressed = delivery / filename
         print("Exporting " + name, flush=True)
         run([*docker, "image", "save", "--output", linux(raw), tag], timeout=180)
@@ -261,7 +263,7 @@ def main():
             "--dart",
             args.dart,
             "--report",
-            str(delivery / "validation.json"),
+            str(details / "validation.json"),
         ],
         timeout=360,
     )
@@ -280,6 +282,20 @@ def main():
             stdout=private,
             timeout=20,
         )
+    updated_archives = [item["file"] for item in archives]
+    output = ROOT / "release"
+    if args.api_only:
+        # Keep a complete, current install set locally while marking only API
+        # for transfer. Reuse dependencies only when their IDs and hashes match.
+        previous = json.loads((output / "校验信息/release.json").read_text(encoding="utf-8"))
+        for tag, identity in zip(images[1:], image_ids[1:], strict=True):
+            record = next(item for item in previous["archives"] if item["image"] == tag)
+            if record["imageId"] != identity:
+                raise ValueError("Dependency changed; create a full delivery instead")
+            with (output / record["file"]).open("rb") as file:
+                if hashlib.file_digest(file, "sha256").hexdigest() != record["sha256"]:
+                    raise ValueError("Cached dependency archive checksum mismatch")
+            archives.append(record)
     metadata = {
         "schemaVersion": 2,
         "deliveryKind": "api-update" if args.api_only else "first-install",
@@ -294,25 +310,24 @@ def main():
         "images": images,
         "imageIds": image_ids,
         "archives": archives,
+        "updatedArchives": updated_archives,
         "totalSize": sum(item["size"] for item in archives),
         "packagedAt": datetime.now(UTC).isoformat(),
         "realNasDeployed": False,
     }
-    (delivery / "release.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    (delivery / "checksums.sha256").write_text(
+    (details / "release.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    (details / "checksums.sha256").write_text(
         "".join(item["sha256"] + "  " + item["file"] + "\n" for item in archives),
         encoding="utf-8",
     )
-    shutil.copyfile(ROOT / "docs/synology-test.md", delivery / "部署与验收.md")
-    output = (
-        ROOT
-        / "release"
-        / ("docker-linux-amd64-api-update" if args.api_only else "docker-linux-amd64")
-    )
+    shutil.copyfile(ROOT / "docs/synology-test.md", delivery / "部署说明.md")
     output.mkdir(parents=True, exist_ok=True)
     # Promote only after every compressed archive and the live stack have passed.
-    for path in delivery.iterdir():
-        path.replace(output / path.name)
+    for path in delivery.rglob("*"):
+        if path.is_file():
+            target = output / path.relative_to(delivery)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            path.replace(target)
     print(json.dumps(metadata), flush=True)
 
 
