@@ -1,6 +1,6 @@
 # 项目约定
 
-- 当前交付 PostgreSQL 基础；后续采用 PowerSync + FastAPI，客户端离线优先。
+- 已完成 PostgreSQL 基础；当前验证 PowerSync + FastAPI 最小双向链路，客户端离线优先。
 - 从固定支出最小功能开始，不实现备份、家庭共享、管理后台或自研同步引擎。
 - 不改真实 NAS、账号权限或生产数据，不自动上传或部署。
 - 数据库验证必须使用真实 PostgreSQL；SQLite 不能代替。

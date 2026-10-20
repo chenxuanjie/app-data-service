@@ -18,6 +18,8 @@ def user_transaction(engine: Engine, user_id: str) -> Iterator[Connection]:
     if not isinstance(user_id, str) or not user_id.strip() or len(user_id) > 200:
         raise ValueError("Invalid authenticated user ID")
     with engine.begin() as connection:
+        # PostgreSQL 17 bounds the whole transaction, not only individual SQL calls.
+        connection.exec_driver_sql("SET LOCAL transaction_timeout = '20s'")
         connection.execute(
             sa.text("SELECT set_config('app.user_id', :user_id, true)"), {"user_id": user_id}
         )

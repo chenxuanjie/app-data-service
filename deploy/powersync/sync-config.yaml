@@ -1,0 +1,13 @@
+config:
+  edition: 3
+  storage_version: 2
+streams:
+  private_expenses:
+    auto_subscribe: true
+    query: |
+      SELECT expenses.* FROM zheri.expenses
+      WHERE deleted_at IS NULL AND dataset_id IN (
+        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
+          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
+        )
+      )

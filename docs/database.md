@@ -11,6 +11,8 @@
 | zheri.expenses | 全表唯一 text id，保留已有固定支出 ID |
 | core.import_batches | 数据集与规范化来源哈希唯一，避免重复导入 |
 | core.import_records | 来源 ID 到目标 ID 的可追溯映射，限定同一数据集 |
+| core.mutation_receipts | 用户/客户端/修改 UUID 主键，保存提交结果和内容哈希 |
+| zheri.expense_conflicts | 冲突候选、当时服务器版本、选择结果，按用户和数据集隔离 |
 
 ## 固定支出映射
 
@@ -42,8 +44,10 @@
 
 运行角色不能修改记录 id/dataset_id、不能建表、提权或硬删除。数据库触发器
 管理 row_version 与 updated_at，客户端提交的版本值不会直接覆盖服务端计数。
-后续 API 必须用预期 row_version 原子条件更新，并实现冲突候选记录与选择流程；
-当前数据库测试只验证该条件更新机制，尚未实现冲突 UI 或完整上传协议。
+API 在数据集事务锁和记录行锁内比较预期版本，原子更新；同设备的未确认修改通过
+已提交前序回执衔接。其他设备插入修改后，该链不能跨越新的版本继续覆盖。
+发生冲突时保留候选及当时服务器快照，返回持久化冲突回执；接口提供选择，UI 后续接入。
+事务总时限 20 秒、单条 SQL 15 秒、锁等待 5 秒、连接 5 秒；超时回滚并返回错误。
 
 ## PowerSync 接入准备
 
@@ -54,9 +58,13 @@ PostgreSQL 17.11 开启 wal_level=logical，publication `powersync` 只包含：
 - core.dataset_members
 
 复制角色只读这些表，不读取 users 或导入审计，不使用 FOR ALL TABLES。
-没有创建复制槽或 bucket 存储，避免无人消费的 WAL 无限制积压。
+开发业务库不常驻复制槽。真实链路实验在临时源库创建槽，并在结束时清理；
+bucket 存储使用独立临时 PostgreSQL 数据库及专用角色，不进入业务 publication。
+修改回执与冲突表仅允许运行角色按 RLS 访问，复制角色无读取权限；
+由业务 API 处理冲突选择，不让内部表直接同步。
 
-同步服务负责下行；客户端 uploadData 仍需经认证的业务 API 写入。
+同步服务负责下行；客户端 uploadData 经认证的业务 API 写入。当前使用 Sync Streams
+edition 3、storage_version 2，筛选成员关系及 `app_id = 'zheri'`，排除软删除记录。
 后续采用独立新本地库与增量业务写入，不能让旧 changeset 和新 SDK 同时跟踪
 同一业务数据，不能用“整份快照缺失的 ID 就删除”的逻辑处理陈旧页面。
 

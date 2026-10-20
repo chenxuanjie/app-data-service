@@ -11,10 +11,13 @@ dependencies = [
   "SQLAlchemy==2.1.5",
   "alembic==1.20.0",
   "psycopg[binary]==3.3.6",
+  "fastapi==0.148.0",
+  "uvicorn==0.54.0",
+  "PyJWT[crypto]==2.15.1",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1", "ruff==0.17.1", "PyYAML==6.0.3"]
+dev = ["pytest==9.1.1", "ruff==0.17.1", "PyYAML==6.0.3", "httpx==0.28.1"]
 
 [project.scripts]
 app-data = "app_data_service.cli:main"

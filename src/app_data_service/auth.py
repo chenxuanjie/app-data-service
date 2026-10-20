@@ -1,0 +1,69 @@
+"""RS256 application and sync tokens. DSM session exchange is a later integration."""
+
+import hashlib
+import json
+from datetime import UTC, datetime, timedelta
+
+import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+
+API_AUDIENCE = "app-data-api"
+SYNC_AUDIENCE = "app-data-powersync"
+
+
+class TokenAuthority:
+    def __init__(self, private_pem: bytes, issuer: str):
+        key = serialization.load_pem_private_key(private_pem, password=None)
+        if not isinstance(key, RSAPrivateKey) or key.key_size < 2048:
+            raise ValueError("An RSA key of at least 2048 bits is required")
+        self.key = key
+        self.issuer = issuer
+        public = key.public_key()
+        self.kid = hashlib.sha256(
+            public.public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+        ).hexdigest()[:24]
+        self.jwk = {
+            **json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(public)),
+            "kid": self.kid,
+            "alg": "RS256",
+            "use": "sig",
+        }
+
+    def issue(self, user_id: str, audience: str, *, seconds: int = 300) -> str:
+        now = datetime.now(UTC)
+        return jwt.encode(
+            {
+                "sub": user_id,
+                "iss": self.issuer,
+                "aud": audience,
+                "iat": now,
+                "exp": now + timedelta(seconds=seconds),
+            },
+            self.key,
+            algorithm="RS256",
+            headers={"kid": self.kid},
+        )
+
+    def verify(self, token: str) -> str:
+        header = jwt.get_unverified_header(token)
+        if header.get("kid") != self.kid:
+            raise jwt.InvalidTokenError("Unknown signing key")
+        claims = jwt.decode(
+            token,
+            self.key.public_key(),
+            algorithms=["RS256"],
+            audience=API_AUDIENCE,
+            issuer=self.issuer,
+            options={"require": ["exp", "iat", "sub", "iss", "aud"], "strict_aud": True},
+        )
+        actor = claims["sub"]
+        if not isinstance(actor, str) or not actor.strip() or len(actor) > 200 or "\x00" in actor:
+            raise jwt.InvalidTokenError("Invalid subject")
+        if type(claims["exp"]) is not int or type(claims["iat"]) is not int:
+            raise jwt.InvalidTokenError("Timestamps must be integers")
+        if not 0 < claims["exp"] - claims["iat"] <= 3600:
+            raise jwt.InvalidTokenError("Token lifetime exceeds one hour")
+        return actor

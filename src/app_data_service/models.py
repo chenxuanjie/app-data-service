@@ -2,8 +2,10 @@
 
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -117,3 +119,39 @@ class ImportRecord(Base):
     )
     source_id: Mapped[str] = mapped_column(sa.Text, primary_key=True)
     target_id: Mapped[str] = mapped_column(sa.ForeignKey("zheri.expenses.id"))
+
+
+class MutationReceipt(Base):
+    __tablename__ = "mutation_receipts"
+    __table_args__ = {"schema": "core"}
+
+    user_id: Mapped[str] = mapped_column(sa.ForeignKey("core.users.id"), primary_key=True)
+    client_id: Mapped[str] = mapped_column(sa.Text, primary_key=True)
+    mutation_id: Mapped[UUID] = mapped_column(sa.Uuid, primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(sa.ForeignKey("core.datasets.id"))
+    record_id: Mapped[str] = mapped_column(sa.Text)
+    payload_hash: Mapped[str] = mapped_column(sa.Text)
+    base_version: Mapped[int] = mapped_column(sa.BigInteger)
+    result: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+
+
+class ExpenseConflict(Base):
+    __tablename__ = "expense_conflicts"
+    __table_args__ = {"schema": "zheri"}
+
+    id: Mapped[UUID] = mapped_column(sa.Uuid, primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(sa.ForeignKey("core.datasets.id"))
+    user_id: Mapped[str] = mapped_column(sa.ForeignKey("core.users.id"))
+    record_id: Mapped[str] = mapped_column(sa.Text)
+    candidate: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    server_record: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    server_version: Mapped[int] = mapped_column(sa.BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    resolution: Mapped[str | None] = mapped_column(sa.Text)
+    resolved_version: Mapped[int | None] = mapped_column(sa.BigInteger)
+    resolved_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
