@@ -215,15 +215,20 @@ def main():
         raise ValueError("Existing image IDs no longer match the validated release")
     delivery = staging / "delivery"
     delivery.mkdir()
-    details = delivery / "校验信息"
+    details = delivery / "metadata"
     details.mkdir()
     archives = []
     names = ["app-data-service-api", "postgres", "powersync"]
+    filenames = [
+        f"fastapi-{version}.tar.gz",
+        "postgresql-" + images[1].rsplit(":", 1)[1].split("-", 1)[0] + ".tar.gz",
+        "powersync-" + images[2].rsplit(":", 1)[1] + ".tar.gz",
+    ]
     for index, (name, tag, identity) in enumerate(zip(names, images, image_ids, strict=True)):
         if args.api_only and index != 0:
             continue
         raw = staging / (name + ".tar")
-        filename = ["API服务.tar.gz", "PostgreSQL.tar.gz", "PowerSync.tar.gz"][index]
+        filename = filenames[index]
         compressed = delivery / filename
         print("Exporting " + name, flush=True)
         run([*docker, "image", "save", "--output", linux(raw), tag], timeout=180)
@@ -284,10 +289,15 @@ def main():
         )
     updated_archives = [item["file"] for item in archives]
     output = ROOT / "release"
+    previous_path = output / "metadata/release.json"
+    previous = (
+        json.loads(previous_path.read_text(encoding="utf-8")) if previous_path.exists() else None
+    )
     if args.api_only:
         # Keep a complete, current install set locally while marking only API
         # for transfer. Reuse dependencies only when their IDs and hashes match.
-        previous = json.loads((output / "校验信息/release.json").read_text(encoding="utf-8"))
+        if previous is None:
+            raise ValueError("Create a full delivery before an API-only update")
         for tag, identity in zip(images[1:], image_ids[1:], strict=True):
             record = next(item for item in previous["archives"] if item["image"] == tag)
             if record["imageId"] != identity:
@@ -320,7 +330,7 @@ def main():
         "".join(item["sha256"] + "  " + item["file"] + "\n" for item in archives),
         encoding="utf-8",
     )
-    shutil.copyfile(ROOT / "docs/synology-test.md", delivery / "部署说明.md")
+    shutil.copyfile(ROOT / "docs/synology-test.md", delivery / "README.md")
     output.mkdir(parents=True, exist_ok=True)
     # Promote only after every compressed archive and the live stack have passed.
     for path in delivery.rglob("*"):
@@ -328,6 +338,22 @@ def main():
             target = output / path.relative_to(delivery)
             target.parent.mkdir(parents=True, exist_ok=True)
             path.replace(target)
+    # Remove only superseded archives owned by the previous delivery record.
+    # Leave unknown files or a modified archive untouched.
+    current_names = {record["file"] for record in archives}
+    for record in previous["archives"] if previous else []:
+        old = output / record["file"]
+        if (
+            record["file"] in current_names
+            or old.parent.resolve() != output.resolve()
+            or not old.name.endswith(".tar.gz")
+            or not old.is_file()
+        ):
+            continue
+        with old.open("rb") as file:
+            unchanged = hashlib.file_digest(file, "sha256").hexdigest() == record["sha256"]
+        if unchanged:
+            old.unlink()
     print(json.dumps(metadata), flush=True)
 
 

@@ -151,7 +151,7 @@ PowerSync 实验使用静态公钥，避免容器访问宿主机的额外网络�
 
 `tools/render_stack.py` 生成完整测试配置，`tools/build_docker_bundle.py` 构建镜像、
 分别导出三个镜像为独立 tar.gz、逐包重新导入并运行 `tools/verify_stack.py`。只有验证通过才替换交付文件。
-交付集中在 `release/` 根目录，包名为 `API服务.tar.gz`、`PostgreSQL.tar.gz`、`PowerSync.tar.gz`，报告收在 `校验信息/`，后续仅API更新使用 `--api-only`，无需重传未变化的数据库与同步镜像。
+交付集中在 `release/` 根目录，包名为 `fastapi-0.1.0.tar.gz`、`postgresql-17.11.tar.gz`、`powersync-1.27.0.tar.gz`，报告收在 `metadata/`，后续仅API更新使用 `--api-only`，无需重传未变化的数据库与同步镜像。
 验证器使用随机隔离的容器、卷、数据库及严格 TLS DSM 替身，不访问真实 NAS。
 API 镜像以 UID 10001 运行，构建上下文不含 `.local`、密钥或本地数据库。
 本次具体文件、重建方法和手动验收步骤见 [群晖测试部署与验收](docs/synology-test.md)。
