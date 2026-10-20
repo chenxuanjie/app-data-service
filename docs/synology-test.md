@@ -35,13 +35,17 @@ fastapi-0.1.0中的0.1.0是本项目API服务版本；FastAPI框架依赖自身�
 ## 环境与部署
 
 用户已指定参照 board-game-agent。复用环境为 linux/amd64、DSM
-`https://cznas.pp.ua:5001`、NAS 内网 `192.168.1.55`、数据卷 `/volume2`。
+`https://cznas.pp.ua:5001`、NAS 内网 `192.168.1.55`。
+当前数据服务项目目录按用户截图使用 `/volume1/docker/PostgreSQL`，不沿用其他工程的数据卷路径。
 请求地址保留 HTTPS，API 容器通过 extra_hosts 映射 DSM 域名至内网地址，仍验证证书。
 身份命名空间固定为历史地址 `https://cznas.dpdns.org:5001`，不要跟随访问域名修改。
 
-本次选择的新测试目录和 18280/18281 端口尚未远程核实或创建；操作前检查它们未被其他项目使用。
+data子目录是否已创建、目录权限和18280/18281端口尚未远程核实；操作前检查。
 
-1. 在 NAS 手动创建 `/volume2/friend/apps/app_data_service_test/postgres`。
+1. 在 NAS 手动创建 `/volume1/docker/PostgreSQL/data`。
+   File Station中进入docker共享文件夹 → PostgreSQL → 新建data文件夹，大小写须一致。
+   Container Manager的项目目录选 `/volume1/docker/PostgreSQL`，数据库数据单独放在data子目录；
+   不把项目根目录直接挂给数据库，因为其中可能已有docker-compose.yml等文件。
    这是新的空目录；不要指向旧数据库、桌游或折日文件目录。配置禁止自动创建宿主目录，路径错误会明确失败。
 2. 在 Container Manager 的镜像页依次导入三个 `.tar.gz`，确认上述三个标签都存在。
    Docker引擎支持直接加载gzip包；若当前DSM界面的文件选择器不接受该后缀，先解压出各自的`.tar`再导入，
@@ -62,6 +66,21 @@ fastapi-0.1.0中的0.1.0是本项目API服务版本；FastAPI框架依赖自身�
 数据库和 PowerSync 不直接发布宿主端口。不需要给 Flutter 提供数据库密码。
 DSM 用户需要可调用 FileStation.Info 的权限，通常为 File Station 使用权限；无需提供管理员账号。
 若现有账号启用 OTP，在测试登录页输入当前验证码。
+
+## 启动时报绑定源目录不存在
+
+如果日志包含 `invalid mount config for type "bind": bind source path does not exist`，
+说明Docker在创建容器前就找不到宿主机源目录，数据库尚未启动。
+项目目录与数据库数据目录是两个设置，选择项目目录不会自动建立YAML中指定的绑定源。
+
+1. 检查项目中的YAML，postgres.volumes的source应为 `/volume1/docker/PostgreSQL/data`；
+   target保留 `/var/lib/postgresql/data`。不要更改已有密码、私钥和身份配置。
+2. 在File Station创建上面的空data子目录，使用当前配套YAML更新原项目并重新构建。
+   使用在线编辑器时需同步修改NAS上的YAML；本机文件改动不会自动传到NAS。
+3. 不需要重新导入三个镜像，不需要删除项目、数据目录或修改数据库密码。
+4. 预期postgres健康，migrate退出0，然后api/powersync健康；再执行下方同步验收。
+
+此次用户截图显示创建阶段因源目录不存在而失败；尚未证明真实DSM登录和NAS完整运行通过。
 
 ## 用全新测试数据验收
 
