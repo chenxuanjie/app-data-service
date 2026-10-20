@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools==82.0.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "app-data-service"
+version = "0.1.0"
+description = "PostgreSQL foundation for offline-first Flutter apps"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "SQLAlchemy==2.1.5",
+  "alembic==1.20.0",
+  "psycopg[binary]==3.3.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "ruff==0.17.1", "PyYAML==6.0.3"]
+
+[project.scripts]
+app-data = "app_data_service.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

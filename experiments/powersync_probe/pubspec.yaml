@@ -1,0 +1,12 @@
+name: app_data_powersync_probe
+description: Disposable offline SQLite and Drift compatibility verification.
+publish_to: none
+environment:
+  sdk: ^3.11.5
+dependencies:
+  powersync: 2.5.0
+  drift: 2.34.3
+  drift_sqlite_async: 0.3.1
+  sqlite3: 3.5.1
+dev_dependencies:
+  test: 1.33.0

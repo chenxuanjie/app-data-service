@@ -1,0 +1,23 @@
+{
+  "expenses": [
+    {
+      "id": "sample-expense-rent",
+      "name": "房租",
+      "amount": 2000,
+      "cycle": "monthly",
+      "category": "住房",
+      "subcategory": "房租",
+      "iconId": "home",
+      "includeInLivingCost": true,
+      "note": "公开测试样本，不是真实个人数据"
+    },
+    {
+      "id": "sample-expense-mobile-plan",
+      "name": "手机套餐",
+      "amount": 59.10,
+      "cycle": "monthly",
+      "category": "通信网络",
+      "subcategory": "手机套餐"
+    }
+  ]
+}
