@@ -1,0 +1,17 @@
+\set ON_ERROR_STOP on
+\getenv migrator_password APP_MIGRATOR_PASSWORD
+\getenv runtime_password APP_RUNTIME_PASSWORD
+\getenv replication_password APP_REPLICATION_PASSWORD
+
+CREATE ROLE app_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
+  NOBYPASSRLS PASSWORD :'migrator_password';
+CREATE ROLE app_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
+  NOBYPASSRLS PASSWORD :'runtime_password';
+CREATE ROLE app_replication LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE REPLICATION
+  BYPASSRLS PASSWORD :'replication_password';
+
+SELECT current_database() AS database_name \gset
+REVOKE ALL ON DATABASE :"database_name" FROM PUBLIC;
+GRANT CONNECT, CREATE ON DATABASE :"database_name" TO app_migrator;
+GRANT CONNECT ON DATABASE :"database_name" TO app_runtime, app_replication;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;

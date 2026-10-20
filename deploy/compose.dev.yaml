@@ -1,0 +1,41 @@
+name: app-data-service-dev
+services:
+  postgres:
+    image: postgres:17.11-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: app_data
+      POSTGRES_USER: app_admin
+      POSTGRES_PASSWORD: ${APP_ADMIN_PASSWORD:?Run tools/bootstrap_dev.py first}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --encoding=UTF8
+      APP_MIGRATOR_PASSWORD: ${APP_MIGRATOR_PASSWORD:?Required}
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:?Required}
+      APP_REPLICATION_PASSWORD: ${APP_REPLICATION_PASSWORD:?Required}
+    ports:
+      - "127.0.0.1:55432:5432"
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+      - -c
+      - max_slot_wal_keep_size=256MB
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/001-roles.sql:/docker-entrypoint-initdb.d/001-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    mem_limit: 512m
+    cpus: 1.0
+volumes:
+  pgdata:
