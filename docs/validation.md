@@ -9,12 +9,12 @@ feature/powersync-sync。折日位于 codex/data-service-sync，新增独立测�
 | 项目 | 实际覆盖 |
 | --- | --- |
 | PostgreSQL | Ubuntu WSL Docker，17.11 bookworm，linux/amd64；新装/升级至 0004，重复迁移 |
-| Python | 80 项 pytest 通过，包含真实数据库，没有跳过数据库测试；ruff 检查及格式检查通过 |
+| Python | 86 项 pytest 通过，包含真实数据库，没有跳过数据库测试；ruff 检查及格式检查通过 |
 | 权限 | RLS 账号/应用隔离、无身份拒绝、连接池作用域清除、跨账号导入拒绝、会话表不复制 |
 | 事务 | 失败回滚、并发幂等导入、精确十进制、版本递增、过时修改保护、响应丢失重试 |
 | 身份实现 | DSM 发现/登录/OTP/UID验证/退出，HTTPS固定源、请求级Cookie和Token；HTTP替身与严格TLS容器替身，未用真实DSM |
 | 应用会话 | 加密DSM会话、刷新哈希、过期/撤销、刷新验证身份、容器重启保留会话及签名密钥 |
-| 完整部署 | PostgreSQL → migrate → API → PowerSync，单来源流式网关和JWKS；三个镜像导出/重新导入后验证 |
+| 完整部署 | PostgreSQL → migrate → API → PowerSync，单来源流式网关和JWKS；三个镜像分别gzip压缩/逐包重新导入后验证 |
 | 同步服务 | PowerSync 1.27.0，独立PostgreSQL bucket库，Sync Streams edition 3 / storage version 2 |
 | 同步客户端 | 三个 Windows Dart SQLite 客户端：同账号两个、另账号一个，经真实API/数据库/复制/网关 |
 | 持久化 | PostgreSQL容器强制重建，版本5软删除仍存在；API重启会话有效；退出后旧API令牌401 |
@@ -41,6 +41,7 @@ Dart Wasm；本次通过的是 JavaScript Release，不宣称 Wasm 模式通过�
 7. 完整容器重建、会话恢复与退出撤销的实际HTTP验证。
 
 工具清理自身随机容器/卷/网络；早期探测还清理临时数据库、角色和复制槽。
+交付方式已调整为三个独立tar.gz；每个文件验证标签、架构、镜像ID、SHA-256并实际导入。
 部署包的 sourceTreeSha256 指向镜像实际源码；构建时 dirty 标记属实，不伪造干净提交来源。
 交付文件与验收矩阵见 [群晖测试部署与验收](synology-test.md)。
 

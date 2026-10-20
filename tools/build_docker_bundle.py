@@ -1,4 +1,4 @@
-"""Build, save, load and verify a fixed Synology image-import TAR locally.
+"""Build or repack three compressed Synology image archives locally.
 
 Python backend project: the Flutter publisher's pubspec-only wrapper does not
 apply. This driver keeps the same build/save/load/verify and atomic-delivery
@@ -6,6 +6,7 @@ contract without registering a fake Flutter project or touching NAS.
 """
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -23,10 +24,78 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def source_fingerprint():
+    digest = hashlib.sha256()
+    sources = [
+        ROOT / name
+        for name in ["Dockerfile", "pyproject.toml", "alembic.ini", "requirements-runtime.lock"]
+    ]
+    sources += sorted((ROOT / "src").rglob("*.py")) + sorted((ROOT / "migrations").rglob("*.py"))
+    for path in sources:
+        digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0" + path.read_bytes())
+    return digest.hexdigest()
+
+
+def validate_archive(path, expected_tag, expected_image_id):
+    """Reject wrong images/platforms and incomplete archives before delivery."""
+    with tarfile.open(path, "r:gz") as archive:
+        manifest = json.load(archive.extractfile("manifest.json"))
+        if len(manifest) != 1 or manifest[0].get("RepoTags") != [expected_tag]:
+            raise ValueError("Archive must contain exactly its designated image tag")
+        entry = manifest[0]
+        config_bytes = archive.extractfile(entry["Config"]).read()
+        config = json.loads(config_bytes)
+        if config["os"] != "linux" or config["architecture"] != "amd64":
+            raise ValueError("Unexpected archived image platform")
+        config_id = "sha256:" + hashlib.sha256(config_bytes).hexdigest()
+
+        def references_config(identity, visited):
+            if identity == config_id:
+                return True
+            if identity in visited or not identity.startswith("sha256:"):
+                return False
+            visited.add(identity)
+            try:
+                payload = archive.extractfile(
+                    "blobs/sha256/" + identity.removeprefix("sha256:")
+                ).read()
+            except KeyError:
+                return False
+            if "sha256:" + hashlib.sha256(payload).hexdigest() != identity:
+                return False
+            descriptor = json.loads(payload)
+            if descriptor.get("config", {}).get("digest") == config_id:
+                return True
+            return any(
+                references_config(child["digest"], visited)
+                for child in descriptor.get("manifests", [])
+            )
+
+        # Classic IDs identify configs; Docker 29's containerd store can instead
+        # identify an OCI manifest/index. Bind either to the same image config.
+        if not references_config(expected_image_id, set()):
+            raise ValueError("Archived image identity differs from inspected image")
+        if not entry["Layers"]:
+            raise ValueError("Image layers are missing")
+        for layer in entry["Layers"]:
+            if not archive.getmember(layer).isfile():
+                raise ValueError("Image layer is missing")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compose", type=Path, required=True)
     parser.add_argument("--dart", default=shutil.which("dart") or "dart")
+    parser.add_argument(
+        "--reuse-existing",
+        type=Path,
+        help="Repack an already validated release.json without rebuilding images",
+    )
+    parser.add_argument(
+        "--api-only",
+        action="store_true",
+        help="Deliver only the API image; dependency images must already be installed",
+    )
     parser.add_argument(
         "--docker", choices=["native", "wsl"], default="wsl" if os.name == "nt" else "native"
     )
@@ -63,82 +132,124 @@ def main():
     image = f"app-data-service:{version}-{revision[:7]}{'-dirty' if dirty else ''}-{stamp}"
     staging = ROOT / ".local" / ("bundle-" + uuid4().hex[:12])
     staging.mkdir(parents=True)
-    wheels = ROOT / ".docker-wheels"
-    wheels.mkdir(exist_ok=True)
-    run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "download",
-            "--dest",
-            str(wheels),
-            "--only-binary=:all:",
-            "--no-deps",
-            "--timeout",
-            "15",
-            "--retries",
-            "1",
-            "--platform",
-            "manylinux_2_17_x86_64",
-            "--platform",
-            "manylinux_2_28_x86_64",
-            "--platform",
-            "manylinux_2_34_x86_64",
-            "--platform",
-            "manylinux2014_x86_64",
-            "--python-version",
-            "3.14",
-            "--implementation",
-            "cp",
-            "--abi",
-            "cp314",
-            "--abi",
-            "abi3",
-            "--abi",
-            "none",
-            "-r",
-            str(ROOT / "requirements-runtime.lock"),
-        ],
-        timeout=180,
-    )
-    run(
-        [
-            *docker,
-            "buildx",
-            "build",
-            "--load",
-            "--pull=false",
-            "--provenance=false",
-            "--sbom=false",
-            "--platform",
-            "linux/amd64",
-            "--label",
-            "org.opencontainers.image.revision=" + revision,
-            "--label",
-            "org.opencontainers.image.version=" + version,
-            "--tag",
-            image,
-            "--file",
-            linux(ROOT / "Dockerfile"),
-            linux(ROOT),
-        ],
-        timeout=240,
-    )
+    original = None
+    if args.reuse_existing:
+        original = json.loads(args.reuse_existing.read_text(encoding="utf-8"))
+        image = original["images"][0]
+        if source_fingerprint() != original["sourceTreeSha256"]:
+            raise ValueError(
+                "Runtime sources differ from the release; rebuild instead of repacking"
+            )
+        version = original["version"]
+    else:
+        wheels = ROOT / ".docker-wheels"
+        wheels.mkdir(exist_ok=True)
+        run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "download",
+                "--dest",
+                str(wheels),
+                "--only-binary=:all:",
+                "--no-deps",
+                "--timeout",
+                "15",
+                "--retries",
+                "1",
+                "--platform",
+                "manylinux_2_17_x86_64",
+                "--platform",
+                "manylinux_2_28_x86_64",
+                "--platform",
+                "manylinux_2_34_x86_64",
+                "--platform",
+                "manylinux2014_x86_64",
+                "--python-version",
+                "3.14",
+                "--implementation",
+                "cp",
+                "--abi",
+                "cp314",
+                "--abi",
+                "abi3",
+                "--abi",
+                "none",
+                "-r",
+                str(ROOT / "requirements-runtime.lock"),
+            ],
+            timeout=180,
+        )
+        run(
+            [
+                *docker,
+                "buildx",
+                "build",
+                "--load",
+                "--pull=false",
+                "--provenance=false",
+                "--sbom=false",
+                "--platform",
+                "linux/amd64",
+                "--label",
+                "org.opencontainers.image.revision=" + revision,
+                "--label",
+                "org.opencontainers.image.version=" + version,
+                "--tag",
+                image,
+                "--file",
+                linux(ROOT / "Dockerfile"),
+                linux(ROOT),
+            ],
+            timeout=240,
+        )
     images = [image, "postgres:17.11-bookworm", "journeyapps/powersync-service:1.27.0"]
     inspected = json.loads(
         subprocess.check_output([*docker, "image", "inspect", *images], text=True, timeout=15)
     )
     if any(item["Os"] != "linux" or item["Architecture"] != "amd64" for item in inspected):
         raise RuntimeError("Unexpected image platform")
-    archive = staging / "images.tar"
-    run([*docker, "image", "save", "--output", linux(archive), *images], timeout=180)
-    with tarfile.open(archive) as tar:
-        manifest = json.load(tar.extractfile("manifest.json"))
-    archived_tags = {tag for entry in manifest for tag in entry.get("RepoTags", [])}
-    if not set(images) <= archived_tags:
-        raise RuntimeError("Archive is missing an image")
-    run([*docker, "image", "load", "--input", linux(archive)], timeout=180)
+    image_ids = [item["Id"] for item in inspected]
+    if original and image_ids != original["imageIds"]:
+        raise ValueError("Existing image IDs no longer match the validated release")
+    delivery = staging / "delivery"
+    delivery.mkdir()
+    archives = []
+    names = ["app-data-service-api", "postgres", "powersync"]
+    for index, (name, tag, identity) in enumerate(zip(names, images, image_ids, strict=True)):
+        if args.api_only and index != 0:
+            continue
+        raw = staging / (name + ".tar")
+        filename = name + "-linux-amd64.tar.gz"
+        compressed = delivery / filename
+        print("Exporting " + name, flush=True)
+        run([*docker, "image", "save", "--output", linux(raw), tag], timeout=180)
+        with raw.open("rb") as source, compressed.open("wb") as destination:
+            with gzip.GzipFile(filename="", fileobj=destination, mode="wb", mtime=0) as zipped:
+                shutil.copyfileobj(source, zipped, length=4 * 1024 * 1024)
+        validate_archive(compressed, tag, identity)
+        run([*docker, "image", "load", "--input", linux(compressed)], timeout=180)
+        loaded = subprocess.check_output(
+            [*docker, "image", "inspect", "--format", "{{.Id}}", tag], text=True, timeout=15
+        ).strip()
+        if loaded != identity:
+            raise RuntimeError("Loaded image identity differs from the original")
+        with compressed.open("rb") as file:
+            digest = hashlib.file_digest(file, "sha256").hexdigest()
+        archives.append(
+            {
+                "component": name,
+                "file": filename,
+                "image": tag,
+                "imageId": identity,
+                "size": compressed.stat().st_size,
+                "sha256": digest,
+                "importVerified": True,
+            }
+        )
+        raw.unlink()
+    # Run against the images imported from the compressed archives, not the old TAR.
     run(
         [
             sys.executable,
@@ -150,7 +261,7 @@ def main():
             "--dart",
             args.dart,
             "--report",
-            str(staging / "validation.json"),
+            str(delivery / "validation.json"),
         ],
         timeout=360,
     )
@@ -158,7 +269,7 @@ def main():
         configuration["services"][name]["image"] = image
     for service in configuration["services"].values():
         service["pull_policy"] = "never"
-    rendered = staging / "docker-compose.yml"
+    rendered = delivery / "docker-compose.yml"
     rendered.write_text(
         yaml.safe_dump(configuration, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
@@ -169,40 +280,39 @@ def main():
             stdout=private,
             timeout=20,
         )
-    source_hash = hashlib.sha256()
-    sources = [
-        ROOT / name
-        for name in ["Dockerfile", "pyproject.toml", "alembic.ini", "requirements-runtime.lock"]
-    ]
-    sources += sorted((ROOT / "src").rglob("*.py")) + sorted((ROOT / "migrations").rglob("*.py"))
-    for path in sources:
-        source_hash.update(path.relative_to(ROOT).as_posix().encode() + b"\0" + path.read_bytes())
-    with archive.open("rb") as file:
-        digest = hashlib.file_digest(file, "sha256").hexdigest()
     metadata = {
+        "schemaVersion": 2,
+        "deliveryKind": "api-update" if args.api_only else "first-install",
         "version": version,
-        "sourceRevision": revision,
-        "dirtySource": dirty,
-        "sourceTreeSha256": source_hash.hexdigest(),
+        "sourceRevision": original["sourceRevision"] if original else revision,
+        "dirtySource": original["dirtySource"] if original else dirty,
+        "sourceTreeSha256": source_fingerprint(),
+        "packagingRevision": revision,
+        "dirtyPackaging": dirty,
+        "repackedFrom": str(args.reuse_existing.resolve()) if original else None,
         "platform": "linux/amd64",
         "images": images,
-        "imageIds": [item["Id"] for item in inspected],
-        "size": archive.stat().st_size,
-        "sha256": digest,
-        "builtAt": datetime.now(UTC).isoformat(),
+        "imageIds": image_ids,
+        "archives": archives,
+        "totalSize": sum(item["size"] for item in archives),
+        "packagedAt": datetime.now(UTC).isoformat(),
         "realNasDeployed": False,
     }
-    output = ROOT / "release"
-    reports = output / "reports/docker-linux-amd64"
-    reports.mkdir(parents=True, exist_ok=True)
-    # Replace the deliverable only after archive import and live validation pass.
-    archive.replace(output / "app-data-service-linux-amd64-images.tar")
-    for name in ["docker-compose.yml", "validation.json"]:
-        shutil.copyfile(staging / name, reports / name)
-    (reports / "release.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    (reports / "checksums.sha256").write_text(
-        digest + "  ../../app-data-service-linux-amd64-images.tar\n", encoding="utf-8"
+    (delivery / "release.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    (delivery / "checksums.sha256").write_text(
+        "".join(item["sha256"] + "  " + item["file"] + "\n" for item in archives),
+        encoding="utf-8",
     )
+    shutil.copyfile(ROOT / "docs/synology-test.md", delivery / "部署与验收.md")
+    output = (
+        ROOT
+        / "release"
+        / ("docker-linux-amd64-api-update" if args.api_only else "docker-linux-amd64")
+    )
+    output.mkdir(parents=True, exist_ok=True)
+    # Promote only after every compressed archive and the live stack have passed.
+    for path in delivery.iterdir():
+        path.replace(output / path.name)
     print(json.dumps(metadata), flush=True)
 
 

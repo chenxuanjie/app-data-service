@@ -5,20 +5,25 @@
 
 ## 交付文件
 
-在服务仓库 `release/` 中使用以下配套文件，不使用旧的仅 PostgreSQL 配置：
+新交付目录为 `release/docker-linux-amd64/`，其中三个镜像分别压缩，不再使用旧的一体 TAR：
 
 | 文件 | 用途 |
 | --- | --- |
-| app-data-service-linux-amd64-images.tar | 一包包含 API、PostgreSQL、PowerSync 三个 linux/amd64 镜像 |
-| reports/docker-linux-amd64/docker-compose.yml | 完整四服务配置；内含随机密码及私钥，私下保存，不提交或公开 |
-| reports/docker-linux-amd64/release.json | 镜像标签、来源树指纹、TAR 大小及 SHA-256 |
-| reports/docker-linux-amd64/validation.json | 本地导入和真实同步链路验证结果；DSM 为严格 TLS 替身 |
+| app-data-service-api-linux-amd64.tar.gz | API及一次性迁移镜像，后续业务更新主要替换它 |
+| postgres-linux-amd64.tar.gz | PostgreSQL 17.11；首次安装或数据库版本升级时导入 |
+| powersync-linux-amd64.tar.gz | PowerSync 1.27.0；首次安装或同步服务版本升级时导入 |
+| docker-compose.yml | 四服务完整配置；内含随机密码及私钥，私下保存 |
+| release.json / checksums.sha256 | 每个分包的标签、镜像ID、大小、SHA-256及来源记录 |
+| validation.json | 从分包重新导入后的完整本地链路验证，DSM为严格TLS替身 |
+| 部署与验收.md | 本文的随包副本 |
 
-TAR 大小为 1126362624 字节，SHA-256：
-`a18413a092f70d88db58eafb59d99215db4fc8d62e7d6e438dffd204bcea8cb1`。
-API 镜像为 `app-data-service:0.1.0-06f014f-dirty-20261020033655`；
-其余为 `postgres:17.11-bookworm` 和 `journeyapps/powersync-service:1.27.0`。
-构建时功能代码尚未提交，因此 dirty 标记属实；release.json 的 sourceTreeSha256 记录实际镜像源码，提交后不会修改已验证镜像。
+每个tar.gz都是一个可独立导入的完整Docker镜像，不能当成三个文件分卷，也不需要先合并。
+同一镜像解压后与原包的镜像ID一致，配置中的密码、密钥和端口保留。
+本次只重新打包，没有更换镜像或升级应用版本。API仍为
+`app-data-service:0.1.0-06f014f-dirty-20261020033655`，另两个标签为
+`postgres:17.11-bookworm`、`journeyapps/powersync-service:1.27.0`。
+原始构建的dirty标记保留，release.json分别记录运行代码来源与重新打包来源。
+旧的 `release/app-data-service-linux-amd64-images.tar` 及旧reports仅作历史交付记录，不再用于本轮部署。
 
 折日 APK 位于 `C:/Study/MyCode/MyProject/zheri/release/zheri-0.10.22+57.apk`。
 本次仅生成本地文件，没有上传到 WebDAV 或更新远程 OTA。
@@ -34,8 +39,9 @@ API 镜像为 `app-data-service:0.1.0-06f014f-dirty-20261020033655`；
 
 1. 在 NAS 手动创建 `/volume2/friend/apps/app_data_service_test/postgres`。
    这是新的空目录；不要指向旧数据库、桌游或折日文件目录。配置禁止自动创建宿主目录，路径错误会明确失败。
-2. 在 Container Manager 的镜像页导入 TAR，确认上述三个镜像标签都存在。
-   若 DSM 一次导入只显示一个镜像，使用 NAS 终端 `docker load -i <TAR路径>` 导入整包并确认三个标签，避免重新拉取。
+2. 在 Container Manager 的镜像页依次导入三个 `.tar.gz`，确认上述三个标签都存在。
+   Docker引擎支持直接加载gzip包；若当前DSM界面的文件选择器不接受该后缀，先解压出各自的`.tar`再导入，
+   或在NAS终端逐个执行 `docker load -i <分包路径.tar.gz>`。无需重新拉取镜像。
 3. 新建项目 `app-data-service-test`，使用配套 `docker-compose.yml`。
    YAML 自包含，不需要 `.env`、源码目录或 NAS Python；不要重新生成 YAML 覆盖这一份随机密码和签名密钥。
 4. 启动项目。预期 postgres、api、powersync 为运行且健康，migrate 执行完成后退出码为 0；一次性迁移退出是正常状态。
@@ -84,14 +90,31 @@ Web 刷新令牌仅在内存，刷新页面后需重新登录恢复同步，持�
 真实 Android、Windows、Web 三端均完成验收后才进入正式账本迁移；
 Windows 安装包和浏览器实际运行尚待后续验证，本轮不能据此切换正式数据。
 
+## 后续更新方式
+
+- 首次安装：导入三个分包，再用同目录Compose新建项目。
+- 只更新API业务：交付 `release/docker-linux-amd64-api-update/`，其中只有API分包、匹配Compose、校验与验收记录。
+  NAS已有的PostgreSQL/PowerSync镜像标签必须与release.json一致；无需重新传输这两个未变化的依赖。
+- 导入新的API分包后，用配套Compose更新原项目，重新执行migrate并重建api；
+  用界面确认迁移退出0、api健康及powersync恢复。不要勾选删除数据库数据或重建空目录。
+- 保留已有部署的密码、签名密钥、身份命名空间与数据目录。开发机必须使用相同私有Compose生成更新包；
+  NAS端若已自行调整配置，更新时只合并对应image标签和必要迁移，不能用另一套随机凭据覆盖。
+- 数据库/PowerSync版本升级单独验证后交付对应分包，不将数据库跨主版本升级作为普通API更新处理。
+
 ## 本地复现
 
-使用同一份私有配置构建，不旋转现有凭据：
+只重新压缩当前已验证的镜像，不重新构建：
 
 ```powershell
-.venv\Scripts\python tools/build_docker_bundle.py --help
-.venv\Scripts\python tools/verify_stack.py --help
+.venv\Scripts\python tools/build_docker_bundle.py --compose release/reports/docker-linux-amd64/docker-compose.yml --reuse-existing release/reports/docker-linux-amd64/release.json --docker wsl --dart C:/Users/win10/tools/flutter/bin/dart.bat
 ```
 
-构建工具下载锁定 Linux wheels，使用本机 Docker 构建、导出、重新导入、验证后才替换 TAR。
-验证器仅清理自己创建的随机测试容器/卷/网络，不访问 NAS；不能替代上述真实部署验收。
+后续构建新API并只交付API更新包（Docker已有匹配的两个依赖镜像）：
+
+```powershell
+.venv\Scripts\python tools/build_docker_bundle.py --compose release/docker-linux-amd64/docker-compose.yml --api-only --docker wsl --dart C:/Users/win10/tools/flutter/bin/dart.bat
+```
+
+不传`--reuse-existing`会构建当前源码；不传`--api-only`交付完整三个分包。
+工具逐包压缩、核对标签/架构/镜像ID、实际docker load，再验证完整本地同步链路，全部成功后替换交付文件。
+失败不替换已有交付。验证器仅清理自己创建的随机容器/卷/网络，不访问NAS；不能替代真实部署验收。
