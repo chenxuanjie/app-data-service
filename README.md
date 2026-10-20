@@ -13,7 +13,7 @@
 - FastAPI 的 RS256/JWKS 验证、短期同步令牌、幂等上传、冲突双方版本与选择 API。
 - PowerSync 1.27.0 + PostgreSQL bucket 存储的本地真实链路实验，包含两个同账号客户端及另一个账号。
 
-已加入 DSM 登录、会话刷新/退出、单入口同步网关、四服务自包含 Compose 和镜像导入包。
+已加入 DSM 登录、会话刷新/退出、单入口同步网关、三服务自包含 Compose 和镜像导入包。
 本地完整 Docker 验证使用严格 TLS DSM 替身；真实 DSM 和 NAS 部署仍待验收。
 当前没有：折日正式业务切换、生产数据迁移、备份、共享账本或管理后台。
 `seed-demo` 只创建本地测试身份，不代表通过了 DSM 登录验证。
@@ -75,7 +75,8 @@ Docker 必须先运行。部分 WSL 配置在无前台 Linux 命令时会停止�
 ## 群晖部署配置
 
 本阶段请使用 [群晖测试部署与验收](docs/synology-test.md) 的完整服务包。
-其中包含 PostgreSQL、一次性迁移、API 和 PowerSync，不需要在 NAS 安装 Python。
+其中包含 PostgreSQL、API 和 PowerSync；数据库迁移由API启动命令先行执行，不单列停止容器。
+不需要在 NAS 安装 Python。
 下面保留的 `render_synology.py` 是早期仅数据库配置，不用于本轮完整同步测试。
 
 ```powershell

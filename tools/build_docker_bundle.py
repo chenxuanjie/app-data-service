@@ -115,8 +115,8 @@ def main():
         return subprocess.run(command, check=True, cwd=ROOT, **kwargs)
 
     configuration = yaml.safe_load(args.compose.read_text(encoding="utf-8"))
-    if set(configuration["services"]) != {"postgres", "migrate", "api", "powersync"}:
-        raise ValueError("Use the generated four-service test Compose")
+    if set(configuration["services"]) != {"postgres", "api", "powersync"}:
+        raise ValueError("Use the current three-service test Compose")
     if any(
         key in service
         for service in configuration["services"].values()
@@ -272,8 +272,7 @@ def main():
         ],
         timeout=360,
     )
-    for name in ["api", "migrate"]:
-        configuration["services"][name]["image"] = image
+    configuration["services"]["api"]["image"] = image
     for service in configuration["services"].values():
         service["pull_policy"] = "never"
     rendered = delivery / "docker-compose.yml"

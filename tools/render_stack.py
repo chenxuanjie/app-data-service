@@ -18,6 +18,18 @@ from app_data_service.dsm import DsmProvider
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def api_start_command():
+    """Migrate first, then replace the shell with the long-running API process."""
+    return [
+        "/bin/sh",
+        "-ec",
+        'APP_DATA_DATABASE_URL="$$APP_DATA_MIGRATION_URL" app-data migrate\n'
+        "unset APP_DATA_MIGRATION_URL\n"
+        "exec python -m uvicorn app_data_service.api:from_environment --factory "
+        "--host 0.0.0.0 --port 8000 --no-access-log --no-proxy-headers",
+    ]
+
+
 def stack(
     data_directory,
     origin,
@@ -77,6 +89,7 @@ REVOKE ALL ON DATABASE powersync_storage FROM PUBLIC;
     )
     environment = {
         "APP_DATA_DATABASE_URL": url("RUNTIME"),
+        "APP_DATA_MIGRATION_URL": url("MIGRATOR"),
         "APP_DATA_SIGNING_KEY_B64": base64.b64encode(private).decode(),
         "APP_DATA_ISSUER": origin.rstrip("/"),
         "APP_DATA_DSM_ORIGIN": dsm_origin.rstrip("/"),
@@ -86,21 +99,13 @@ REVOKE ALL ON DATABASE powersync_storage FROM PUBLIC;
         "APP_DATA_POWERSYNC_UPSTREAM": "http://powersync:8080",
         "APP_DATA_ALLOWED_ORIGINS": allowed_origins,
     }
-    migration = {
-        "image": api_image,
-        "command": ["app-data", "migrate"],
-        "environment": {"APP_DATA_DATABASE_URL": url("MIGRATOR")},
-        "depends_on": {"postgres": {"condition": "service_healthy"}},
-        "restart": "no",
-        "mem_limit": "256m",
-    }
-    configuration["services"]["migrate"] = migration
     configuration["services"]["api"] = {
         "image": api_image,
+        "command": api_start_command(),
         "restart": "unless-stopped",
         "environment": environment,
         "ports": [f"{port}:8000"],
-        "depends_on": {"migrate": {"condition": "service_completed_successfully"}},
+        "depends_on": {"postgres": {"condition": "service_healthy"}},
         "mem_limit": "384m",
         "healthcheck": {
             "test": [

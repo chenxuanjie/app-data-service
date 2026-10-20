@@ -1,6 +1,6 @@
 # 群晖测试部署与验收
 
-2026-10-20：本地完整 Docker 验证和折日测试 APK 已生成，尚未部署真实 NAS。
+2026-10-21：本地完整 Docker 验证和折日测试 APK 已生成，尚未在真实NAS完成同步验收。
 本轮只验证独立测试账本的固定支出，不迁移现有折日数据，也不连接旧 WebDAV 数据。
 
 ## 交付文件
@@ -9,10 +9,10 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| fastapi-0.1.0.tar.gz | API及一次性迁移镜像，后续业务更新主要替换它 |
+| fastapi-0.1.0.tar.gz | API与启动前迁移工具，后续业务更新主要替换它 |
 | postgresql-17.11.tar.gz | PostgreSQL 17.11；首次安装或数据库版本升级时导入 |
 | powersync-1.27.0.tar.gz | PowerSync 1.27.0；首次安装或同步服务版本升级时导入 |
-| docker-compose.yml | 四服务完整配置；内含随机密码及私钥，私下保存 |
+| docker-compose.yml | 三服务完整配置；内含随机密码及私钥，私下保存 |
 | metadata/release.json / checksums.sha256 | 每个分包的标签、镜像ID、大小、SHA-256及来源记录 |
 | metadata/validation.json | 从分包重新导入后的完整本地链路验证，DSM为严格TLS替身 |
 | README.md | 本文的随包副本 |
@@ -22,7 +22,7 @@ fastapi-0.1.0中的0.1.0是本项目API服务版本；FastAPI框架依赖自身�
 
 每个tar.gz都是一个可独立导入的完整Docker镜像，不能当成三个文件分卷，也不需要先合并。
 同一镜像解压后与原包的镜像ID一致，配置中的密码、密钥和端口保留。
-本次只重新打包，没有更换镜像或升级应用版本。API仍为
+本次仅调整Compose启动方式，不更换镜像或升级应用版本。API仍为
 `app-data-service:0.1.0-06f014f-dirty-20261020033655`，另两个标签为
 `postgres:17.11-bookworm`、`journeyapps/powersync-service:1.27.0`。
 原始构建的dirty标记保留，release.json分别记录运行代码来源与重新打包来源。
@@ -52,8 +52,9 @@ data子目录是否已创建、目录权限和18280/18281端口尚未远程核�
    或在NAS终端逐个执行 `docker load -i <分包路径.tar.gz>`。无需重新拉取镜像。
 3. 新建项目 `app-data-service-test`，使用配套 `docker-compose.yml`。
    YAML 自包含，不需要 `.env`、源码目录或 NAS Python；不要重新生成 YAML 覆盖这一份随机密码和签名密钥。
-4. 启动项目。预期 postgres、api、powersync 为运行且健康，migrate 执行完成后退出码为 0；一次性迁移退出是正常状态。
-   首次初始化需要一些时间。若失败，先查看 migrate/API/PowerSync 日志，不删除数据目录重试。
+4. 启动项目。预期postgres、api、powersync三个服务全部运行且健康。
+   API容器先执行数据库迁移，成功后直接运行API；升级过程及失败原因查看API日志。
+   首次初始化需要一些时间，不删除数据目录重试。
 5. 在 DSM 反向代理增加来源 `HTTPS cznas.pp.ua:18281`，
    目的地 `HTTP 127.0.0.1:18280`。来源 HTTPS 与 Docker 的宿主 HTTP 端口分开，避免监听冲突。
    配套 YAML 已使用 `APP_DATA_ISSUER=https://cznas.pp.ua:18281`、
@@ -61,7 +62,7 @@ data子目录是否已创建、目录权限和18280/18281端口尚未远程核�
 6. 使用匹配该域名的证书，从手机网络访问 `https://cznas.pp.ua:18281/health`，应返回健康状态。
    `/health` 只证明 API 和数据库可用，不代表 DSM 登录或复制链路通过。需要时开放对应路由/NAS防火墙端口。
 
-常驻内存上限为 PostgreSQL 512 MiB、API 384 MiB、PowerSync 512 MiB；迁移期间另有 256 MiB。
+常驻内存上限为PostgreSQL 512 MiB、API 384 MiB、PowerSync 512 MiB；迁移复用API容器，不额外启动容器。
 这些是容器上限，不是实测 NAS 内存消耗；初次验证观察 DSM 资源与容器日志。
 用户截图确认NAS内核不支持CPU CFS配额，群晖配置不设置cpus/cpu_quota/cpu_period，
 由宿主机正常调度CPU；内存限制与PowerSync进程内存上限保留。
@@ -80,7 +81,7 @@ DSM 用户需要可调用 FileStation.Info 的权限，通常为 File Station �
 2. 在File Station创建上面的空data子目录，使用当前配套YAML更新原项目并重新构建。
    使用在线编辑器时需同步修改NAS上的YAML；本机文件改动不会自动传到NAS。
 3. 不需要重新导入三个镜像，不需要删除项目、数据目录或修改数据库密码。
-4. 预期postgres健康，migrate退出0，然后api/powersync健康；再执行下方同步验收。
+4. 预期postgres、api、powersync均健康且运行，再执行下方同步验收。
 
 此次用户截图显示创建阶段因源目录不存在而失败；尚未证明真实DSM登录和NAS完整运行通过。
 
@@ -90,9 +91,23 @@ DSM 用户需要可调用 FileStation.Info 的权限，通常为 File Station �
 说明当前NAS内核不支持Docker请求的CPU配额。`cpus: 1.0`不是服务运行所必需，
 也不能改成cpu_quota/cpu_period解决，因为这些同样依赖CFS配额能力。
 
-本项目的群晖配置及生成器已移除postgres、migrate、api、powersync四个服务的cpus设置。
+本项目的群晖配置及生成器不设置cpus；新版只包含postgres、api、powersync三个服务。
 更新NAS项目中的YAML后重新构建；只修复postgres会让其他服务后续出现相同错误。
 不需要重新导入镜像、删除数据或修改NAS内核。内存上限继续保留，CPU用量按实际运行观察。
+
+## 旧项目显示“仅部分正在运行”
+
+旧版把数据库迁移单列为migrate服务，成功退出也会让群晖把项目显示为部分运行。
+新版将迁移放进API的启动命令，成功后替换为持续运行的API进程，失败则停止API启动。
+项目只保留postgres、api、powersync三个持续运行服务，正常时应显示全部运行。
+
+对已有NAS项目只更新配套YAML并重新构建，不需要重新导入三个镜像。
+如果旧的 `postgresql-database-migrate-1` 仍留在容器列表，确认新API已健康后，
+仅删除这个已停止的旧迁移容器；它没有数据库数据挂载。不要删除数据库容器、数据目录或共享的API镜像。
+不要为消除灰色状态而把已完成的任务改成长期空转进程。
+
+迁移连接来自私有YAML，迁移子进程使用app_migrator；API业务仍使用app_runtime。
+启动成功后从API主进程环境清除迁移连接变量，Docker配置本身仍由可信NAS管理员管理。
 
 ## 用全新测试数据验收
 
@@ -131,7 +146,7 @@ Windows 安装包和浏览器实际运行尚待后续验证，本轮不能据此
 - 只更新API业务：仍使用同一个release目录，传输fastapi-0.1.0.tar.gz、匹配Compose和必要说明即可。
   本地保留未变化的PostgreSQL和PowerSync分包，不复制第二套目录；metadata/release.json的updatedArchives列出本次更新文件。
   NAS已有的两个依赖镜像标签须与记录一致，无需重复传输。
-- 导入新的API分包后，用配套Compose更新原项目，重新执行migrate并重建api；
+- 导入新的API分包后，用配套Compose更新原项目并重建api，启动时自动执行迁移；
   用界面确认迁移退出0、api健康及powersync恢复。不要勾选删除数据库数据或重建空目录。
 - 保留已有部署的密码、签名密钥、身份命名空间与数据目录。开发机必须使用相同私有Compose生成更新包；
   NAS端若已自行调整配置，更新时只合并对应image标签和必要迁移，不能用另一套随机凭据覆盖。

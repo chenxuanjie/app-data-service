@@ -14,6 +14,7 @@ python -m uvicorn app_data_service.api:from_environment --factory --host 127.0.0
 | 环境变量 | 含义 |
 | --- | --- |
 | APP_DATA_DATABASE_URL | app_runtime 的 postgresql+psycopg URL |
+| APP_DATA_MIGRATION_URL | Compose启动阶段使用的app_migrator URL，升级成功后从API主进程环境移除 |
 | APP_DATA_SIGNING_KEY | 至少 2048 位 RSA 私钥 PEM 路径，不进入客户端或 Git |
 | APP_DATA_SIGNING_KEY_B64 | 容器内使用的同一私钥 Base64 内容，与文件路径二选一 |
 | APP_DATA_ISSUER | 应用令牌签发者，API 严格验证 |
@@ -23,7 +24,9 @@ python -m uvicorn app_data_service.api:from_environment --factory --host 127.0.0
 | APP_DATA_POWERSYNC_UPSTREAM | 容器网络内固定 PowerSync 上游地址 |
 | APP_DATA_ALLOWED_ORIGINS | 逗号分隔的浏览器来源；不使用通配 CORS |
 
-API 启动不会自动升级数据库。Compose 的一次性迁移服务先由迁移角色执行至 0004。
+直接运行uvicorn前仍须先升级数据库。Compose的API启动命令会先通过独立迁移角色执行至0004，
+成功后清除迁移环境变量，再exec启动API；失败不启动API。业务连接继续使用app_runtime。
+项目仅有postgres、api、powersync三个持续运行服务，不再包含独立migrate服务。
 应用令牌限定 RS256、kid、iss、aud=app-data-api、sub、iat、exp，最长一小时；
 同步令牌 audience 单独为 app-data-powersync，有效期五分钟。两种令牌不能混用。
 DSM 会话签发的应用访问令牌有效期 15 分钟，刷新令牌 30 天，刷新时重新验证 DSM UID。

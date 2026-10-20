@@ -96,10 +96,64 @@ def main():
     try:
         started = True
         subprocess.run(
+            [*compose, "up", "-d", "--wait", "--wait-timeout", "60", "--pull", "never", "postgres"],
+            check=True,
+            timeout=80,
+        )
+        failed_start = subprocess.run(
+            [
+                *compose,
+                "run",
+                "--rm",
+                "-T",
+                "--no-deps",
+                "-e",
+                "APP_DATA_MIGRATION_URL=postgresql+psycopg://app_migrator:fixture-invalid@postgres:5432/app_data",
+                "api",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        (directory / "migration-failure.log").write_text(
+            failed_start.stdout + failed_start.stderr, encoding="utf-8"
+        )
+        assert failed_start.returncode != 0
+        assert "Database operation failed" in failed_start.stderr
+        assert "Uvicorn running" not in failed_start.stderr
+        report["migration_failure_prevents_api_start"] = True
+        subprocess.run(
             [*compose, "up", "-d", "--wait", "--wait-timeout", "90", "--pull", "never"],
             check=True,
             timeout=110,
         )
+        services = subprocess.check_output(
+            [*compose, "ps", "--services", "--filter", "status=running"], text=True, timeout=15
+        ).splitlines()
+        assert set(services) == {"postgres", "api", "powersync", "mock-dsm"}
+        all_services = subprocess.check_output(
+            [*compose, "ps", "--all", "--services"], text=True, timeout=15
+        ).splitlines()
+        assert set(all_services) == set(services)
+        report["production_services_all_running"] = ["postgres", "api", "powersync"]
+        subprocess.run(
+            [
+                *compose,
+                "exec",
+                "-T",
+                "api",
+                "python",
+                "-c",
+                "from pathlib import Path; "
+                "assert not any(v.startswith(b'APP_DATA_MIGRATION_URL=') "
+                "for v in Path('/proc/1/environ').read_bytes().split(b'\\0'))",
+            ],
+            check=True,
+            timeout=15,
+        )
+        report["migration_credentials_removed_from_api_process"] = True
         with httpx.Client(trust_env=False, timeout=35) as client:
             users = {}
             for account in ["alice", "bob"]:

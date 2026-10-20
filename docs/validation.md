@@ -1,6 +1,6 @@
 # 验证状态
 
-更新：2026-10-20。PostgreSQL 基础已合入 develop；完整同步与部署工作位于
+更新：2026-10-21。PostgreSQL 基础已合入 develop；完整同步与部署工作位于
 feature/powersync-sync。折日位于 codex/data-service-sync，新增独立测试入口。
 真实 NAS、真实 DSM 和三端运行验收仍待完成；此记录不代表生产迁移完成。
 
@@ -14,8 +14,8 @@ feature/powersync-sync。折日位于 codex/data-service-sync，新增独立测�
 | 事务 | 失败回滚、并发幂等导入、精确十进制、版本递增、过时修改保护、响应丢失重试 |
 | 身份实现 | DSM 发现/登录/OTP/UID验证/退出，HTTPS固定源、请求级Cookie和Token；HTTP替身与严格TLS容器替身，未用真实DSM |
 | 应用会话 | 加密DSM会话、刷新哈希、过期/撤销、刷新验证身份、容器重启保留会话及签名密钥 |
-| 完整部署 | PostgreSQL → migrate → API → PowerSync，单来源流式网关和JWKS；三个镜像分别gzip压缩/逐包重新导入后验证 |
-| NAS创建阶段反馈 | 用户截图先报绑定源目录不存在，再报CPU CFS配额不支持；已对齐数据目录并移除群晖四服务CPU配额，真实启动仍待重试 |
+| 完整部署 | PostgreSQL → API内先迁移后启动 → PowerSync，单来源流式网关和JWKS；三个镜像分别gzip压缩/逐包重新导入后验证 |
+| NAS创建阶段反馈 | 用户截图先报绑定源目录不存在，再报CPU CFS配额不支持；已对齐目录并移除CPU配额；后续截图显示三个业务容器运行，旧迁移容器停止导致项目部分运行，新三服务布局待NAS确认 |
 | 同步服务 | PowerSync 1.27.0，独立PostgreSQL bucket库，Sync Streams edition 3 / storage version 2 |
 | 同步客户端 | 三个 Windows Dart SQLite 客户端：同账号两个、另账号一个，经真实API/数据库/复制/网关 |
 | 持久化 | PostgreSQL容器强制重建，版本5软删除仍存在；API重启会话有效；退出后旧API令牌401 |
