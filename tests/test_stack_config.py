@@ -21,6 +21,9 @@ def test_full_synology_stack_has_private_database_and_stable_identity(monkeypatc
     for name, service in config["services"].items():
         assert "build" not in service and "env_file" not in service
         assert service["platform"] == "linux/amd64"
+        # This user's NAS kernel rejects CFS quotas at container creation.
+        assert not {"cpus", "cpu_quota", "cpu_period"} & service.keys()
+        assert "mem_limit" in service
         if name != "api":
             assert "ports" not in service
     api = config["services"]["api"]

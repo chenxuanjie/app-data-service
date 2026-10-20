@@ -63,6 +63,8 @@ data子目录是否已创建、目录权限和18280/18281端口尚未远程核�
 
 常驻内存上限为 PostgreSQL 512 MiB、API 384 MiB、PowerSync 512 MiB；迁移期间另有 256 MiB。
 这些是容器上限，不是实测 NAS 内存消耗；初次验证观察 DSM 资源与容器日志。
+用户截图确认NAS内核不支持CPU CFS配额，群晖配置不设置cpus/cpu_quota/cpu_period，
+由宿主机正常调度CPU；内存限制与PowerSync进程内存上限保留。
 数据库和 PowerSync 不直接发布宿主端口。不需要给 Flutter 提供数据库密码。
 DSM 用户需要可调用 FileStation.Info 的权限，通常为 File Station 使用权限；无需提供管理员账号。
 若现有账号启用 OTP，在测试登录页输入当前验证码。
@@ -81,6 +83,16 @@ DSM 用户需要可调用 FileStation.Info 的权限，通常为 File Station �
 4. 预期postgres健康，migrate退出0，然后api/powersync健康；再执行下方同步验收。
 
 此次用户截图显示创建阶段因源目录不存在而失败；尚未证明真实DSM登录和NAS完整运行通过。
+
+## 启动时报NanoCPUs或CPU CFS不支持
+
+如果创建容器时提示 `NanoCPUs can not be set`、`kernel does not support CPU CFS`，
+说明当前NAS内核不支持Docker请求的CPU配额。`cpus: 1.0`不是服务运行所必需，
+也不能改成cpu_quota/cpu_period解决，因为这些同样依赖CFS配额能力。
+
+本项目的群晖配置及生成器已移除postgres、migrate、api、powersync四个服务的cpus设置。
+更新NAS项目中的YAML后重新构建；只修复postgres会让其他服务后续出现相同错误。
+不需要重新导入镜像、删除数据或修改NAS内核。内存上限继续保留，CPU用量按实际运行观察。
 
 ## 用全新测试数据验收
 

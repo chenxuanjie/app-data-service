@@ -93,7 +93,6 @@ REVOKE ALL ON DATABASE powersync_storage FROM PUBLIC;
         "depends_on": {"postgres": {"condition": "service_healthy"}},
         "restart": "no",
         "mem_limit": "256m",
-        "cpus": 1.0,
     }
     configuration["services"]["migrate"] = migration
     configuration["services"]["api"] = {
@@ -103,7 +102,6 @@ REVOKE ALL ON DATABASE powersync_storage FROM PUBLIC;
         "ports": [f"{port}:8000"],
         "depends_on": {"migrate": {"condition": "service_completed_successfully"}},
         "mem_limit": "384m",
-        "cpus": 1.0,
         "healthcheck": {
             "test": [
                 "CMD",
@@ -161,7 +159,6 @@ REVOKE ALL ON DATABASE powersync_storage FROM PUBLIC;
         },
         "depends_on": {"api": {"condition": "service_healthy"}},
         "mem_limit": "512m",
-        "cpus": 1.0,
         "healthcheck": {
             "test": [
                 "CMD",

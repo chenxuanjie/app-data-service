@@ -53,7 +53,6 @@ def compose(data_directory: str, passwords: dict[str, str]) -> dict:
             "retries": 12,
         },
         "mem_limit": "512m",
-        "cpus": 1.0,
     }
     return {"name": "app-data-service", "services": {"postgres": service}}
 
