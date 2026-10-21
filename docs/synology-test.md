@@ -109,6 +109,37 @@ DSM 用户需要可调用 FileStation.Info 的权限，通常为 File Station �
 迁移连接来自私有YAML，迁移子进程使用app_migrator；API业务仍使用app_runtime。
 启动成功后从API主进程环境清除迁移连接变量，Docker配置本身仍由可信NAS管理员管理。
 
+## Web 登录提示无法连接：核对浏览器来源
+
+2026-10-21 已确认：当前折日 Web 来源为 `http://127.0.0.1:8082`，
+NAS API 对这个来源的登录预检返回 400 `Disallowed CORS origin`；
+对原有 `http://127.0.0.1:8080` 返回 200。其他端同账号可登录。
+这是浏览器来源白名单不匹配，`/health` 可访问不能证明浏览器登录预检通过。
+
+本地交付 `release/docker-compose.yml` 的 `services.api.environment` 已改为：
+
+```yaml
+APP_DATA_ALLOWED_ORIGINS: http://127.0.0.1:8080,http://localhost:8080,http://127.0.0.1:8082
+```
+
+1. 在 Container Manager 中编辑现有项目 YAML，只合并上面这一项，保留 NAS 上其他配置。
+   若 NAS 配置与本地交付完全一致，也可使用更新后的配套 YAML 替换。
+2. 保存后重新构建项目，使 API 容器按新环境变量重新创建；仅重启旧容器不会更新环境变量。
+   不需要导入新镜像、重新构建 Web 或删除数据目录。
+3. 保持 Web 地址为 `http://127.0.0.1:8082/`，刷新后重试登录。
+   用下面的无凭据预检确认 NAS 已使用新配置：
+
+```powershell
+curl.exe --noproxy "*" -i -X OPTIONS "https://cznas.pp.ua:18281/v1/auth/login" -H "Origin: http://127.0.0.1:8082" -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: content-type"
+```
+
+预期状态 200，包含 `access-control-allow-origin: http://127.0.0.1:8082`。
+本次只修改本地交付配置，尚未部署到 NAS；远端更新后的预检、登录及同步仍需验收。
+本地使用交付环境配置验证登录与同步路由的预检：三个列明来源返回 200，未列明来源返回 400；
+ruff 检查、格式检查及真实 PostgreSQL 上的完整 86 项测试通过。
+8080/8082 是这份配置当前允许的来源，并非折日固定端口约定；换地址时按实际来源维护白名单，
+协议、主机和端口均须匹配，不改为通配符。
+
 ## 用全新测试数据验收
 
 安装新 APK，进入设置 → **群晖同步测试**，服务地址填上面配置后的 HTTPS 来源地址。
