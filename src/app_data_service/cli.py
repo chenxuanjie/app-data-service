@@ -93,7 +93,13 @@ def inspect_database(url: str) -> dict:
                 .scalars()
                 .all()
             )
-            expected = ["core.dataset_members", "core.datasets", "zheri.expenses"]
+            expected = [
+                "core.dataset_members",
+                "core.datasets",
+                "zheri.assets",
+                "zheri.expense_categories",
+                "zheri.expenses",
+            ]
             if wal != "logical" or publication != expected:
                 raise ValueError("PowerSync prerequisite configuration is incomplete")
             return {

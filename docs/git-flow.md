@@ -27,3 +27,14 @@ git merge --no-ff feature/功能名 -m "chore(git): 合并已验证的功能"
 提交采用中文 Conventional Commits；合并前检查差异、测试结果和工作区。
 密钥、数据库卷、开发配置、构建产物不提交。没有远端仓库时只保留本地提交，
 不自行创建远端、推送或发布。不要把尚未实测的 DSM 登录或跨端同步记为已完成。
+
+## 提交与镜像来源（2026-10-21）
+
+正式交付顺序为：完成检查 → 确定版本并提交相关改动 → 干净工作区构建 → 产物验证 → 来源校验 → 按授权推送/部署。
+测试交付可以来自已提交的 feature 分支；不为构建强制合入 main。正式版本仍按 release 分支验收流程处理。
+
+正式构建使用 [提交后构建与交付](C:/Users/win10/.codex/skills/flutter-release-publisher/references/committed-delivery.md)
+中的 source gate 包裹本仓库现有构建脚本，记录本次新 API 分包及配套 Compose。
+本地实验可保留 dirty 标识，但不能作为正式交付；提交源码后必须重新构建，不能只改镜像标签。
+私有 Compose 只记录摘要，不提交其密码和私钥；凭据与产物均放入已忽略目录。
+Git 远端推送和 NAS 部署不因完成本地提交而自动获准。

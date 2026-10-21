@@ -43,3 +43,25 @@ def test_full_synology_stack_has_private_database_and_stable_identity(monkeypatc
     assert decoded["storage"]["type"] == "postgresql"
     assert decoded["sync_config"]["content"].startswith("config:")
     assert decoded["client_auth"]["jwks_uri"] == "http://api:8000/.well-known/jwks.json"
+
+
+def test_rules_update_preserves_all_private_settings(monkeypatch):
+    from copy import deepcopy
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
+    renderer = importlib.import_module("render_stack")
+    bundler = importlib.import_module("build_docker_bundle")
+    config = renderer.stack(
+        "/volume1/test/data", "https://data.example.test", "https://nas.example.test:5001"
+    )
+    before = deepcopy(config)
+    environment = config["services"]["powersync"]["environment"]
+    old_rules = yaml.safe_load(base64.b64decode(environment["POWERSYNC_CONFIG_B64"]))
+    expected = deepcopy(old_rules)
+    expected["sync_config"]["content"] = "new rules"
+    bundler.update_sync_rules(config, "new rules")
+    assert yaml.safe_load(base64.b64decode(environment["POWERSYNC_CONFIG_B64"])) == expected
+    environment["POWERSYNC_CONFIG_B64"] = before["services"]["powersync"]["environment"][
+        "POWERSYNC_CONFIG_B64"
+    ]
+    assert config == before

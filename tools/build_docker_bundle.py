@@ -6,6 +6,7 @@ contract without registering a fake Flutter project or touching NAS.
 """
 
 import argparse
+import base64
 import gzip
 import hashlib
 import json
@@ -80,6 +81,16 @@ def validate_archive(path, expected_tag, expected_image_id):
         for layer in entry["Layers"]:
             if not archive.getmember(layer).isfile():
                 raise ValueError("Image layer is missing")
+
+
+def update_sync_rules(configuration: dict, content: str) -> None:
+    """Update rules only; never regenerate database passwords or signing keys."""
+    environment = configuration["services"]["powersync"]["environment"]
+    decoded = yaml.safe_load(base64.b64decode(environment["POWERSYNC_CONFIG_B64"], validate=True))
+    decoded["sync_config"]["content"] = content
+    environment["POWERSYNC_CONFIG_B64"] = base64.b64encode(
+        yaml.safe_dump(decoded, sort_keys=False, allow_unicode=True).encode()
+    ).decode()
 
 
 def main():
@@ -272,6 +283,10 @@ def main():
         ],
         timeout=360,
     )
+    if original is None:
+        update_sync_rules(
+            configuration, (ROOT / "deploy/powersync/sync-config.yaml").read_text(encoding="utf-8")
+        )
     configuration["services"]["api"]["image"] = image
     for service in configuration["services"].values():
         service["pull_policy"] = "never"

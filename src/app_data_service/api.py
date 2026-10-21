@@ -28,14 +28,17 @@ from starlette.responses import StreamingResponse
 from .auth import SYNC_AUDIENCE, TokenAuthority
 from .config import database_url, make_engine
 from .dsm import DsmFailure, DsmProvider
-from .models import Dataset, ExpenseConflict, User
+from .entities import ENTITY_MODELS
+from .models import Dataset, ExpenseConflict, SyncConflict, User
 from .sessions import REFRESH_AUDIENCE, REFRESH_LIFETIME, SessionManager
 from .store import user_transaction
 from .sync import (
     ReplayError,
     Resolution,
+    ResolutionV2,
     ScopeError,
     Upload,
+    UploadV2,
     apply_upload,
     current_record,
     resolve_conflict,
@@ -96,7 +99,7 @@ def create_app(
         if dispose_engine:
             engine.dispose()
 
-    app = FastAPI(title="App Data Service", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="App Data Service", version="0.2.0", lifespan=lifespan)
     app.add_middleware(BoundedBody)
     if allowed_origins:
         app.add_middleware(
@@ -303,6 +306,56 @@ def create_app(
                     ).mappings()
                 ]
             }
+
+    @app.get("/v1/capabilities")
+    def capabilities(actor: Actor):
+        return {"sync_protocols": [1, 2], "entities": list(ENTITY_MODELS), "max_mutations": 100}
+
+    @app.post("/v2/sync/upload")
+    def upload_v2(body: UploadV2, actor: Actor):
+        with user_transaction(engine, actor) as connection:
+            result = apply_upload(connection, actor, body)
+        return result
+
+    @app.get("/v2/conflicts")
+    def conflicts_v2(actor: Actor, dataset_id: str):
+        result = []
+        with user_transaction(engine, actor) as connection:
+            for entity_type in ENTITY_MODELS:
+                table = (ExpenseConflict if entity_type == "expenses" else SyncConflict).__table__
+                conditions = [table.c.dataset_id == dataset_id, table.c.resolved_at.is_(None)]
+                if entity_type != "expenses":
+                    conditions.append(table.c.entity_type == entity_type)
+                rows = connection.execute(
+                    sa.select(table)
+                    .where(*conditions)
+                    .order_by(table.c.created_at, table.c.id)
+                    .limit(100)
+                ).mappings()
+                for row in rows:
+                    current = current_record(
+                        connection,
+                        dataset_id,
+                        row["record_id"],
+                        lock=False,
+                        entity_type=entity_type,
+                    )
+                    result.append(
+                        {
+                            **dict(row),
+                            "entity_type": entity_type,
+                            "current_record": snapshot(current),
+                            "current_version": current["row_version"] if current else 0,
+                        }
+                    )
+        result.sort(key=lambda row: (row["created_at"], str(row["id"])))
+        return {"conflicts": result[:100]}
+
+    @app.post("/v2/conflicts/{conflict_id}/resolve")
+    def resolve_v2(conflict_id: UUID, body: ResolutionV2, actor: Actor):
+        with user_transaction(engine, actor) as connection:
+            result = resolve_conflict(connection, conflict_id, body, entity_type=body.entity_type)
+        return result
 
     @app.post("/v1/sync/upload")
     def upload(body: Upload, actor: Actor):

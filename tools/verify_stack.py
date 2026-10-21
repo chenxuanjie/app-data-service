@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--api-image", default="app-data-service:0.1.0-test")
+    parser.add_argument("--api-image", default="app-data-service:0.2.0-test")
     parser.add_argument("--dart", default=shutil.which("dart") or "dart")
     parser.add_argument(
         "--docker", choices=["native", "wsl"], default="wsl" if os.name == "nt" else "native"

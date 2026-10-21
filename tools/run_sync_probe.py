@@ -27,7 +27,16 @@ from sqlalchemy.engine import make_url
 from app_data_service.auth import API_AUDIENCE, TokenAuthority
 from app_data_service.cli import local_config, migrate
 from app_data_service.config import make_engine
-from app_data_service.models import App, Dataset, DatasetMember, Expense, User
+from app_data_service.entities import canonical_record, database_values
+from app_data_service.models import (
+    App,
+    Asset,
+    Dataset,
+    DatasetMember,
+    Expense,
+    ExpenseCategory,
+    User,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -118,6 +127,7 @@ def run() -> None:
             {
                 "directory": str(directory),
                 "api": "http://127.0.0.1:18280",
+                "multi_entity": True,
                 "tokens": {
                     user: authority.issue(user, API_AUDIENCE, seconds=900)
                     for user in ["alice", "bob"]
@@ -178,6 +188,45 @@ def run() -> None:
                     category="",
                     subcategory="",
                     sort_order=0,
+                )
+            )
+        with source.begin() as c:
+            c.execute(
+                sa.insert(Asset).values(
+                    **database_values(
+                        "assets",
+                        canonical_record(
+                            "assets",
+                            {
+                                "id": "other-app-asset",
+                                "name": "other app",
+                                "price": "1",
+                                "purchaseDate": "2024-01-01",
+                                "category": "",
+                                "residualValue": "0",
+                                "targetDailyCost": "1",
+                                "icon": "inventory",
+                                "color": 0,
+                            },
+                        ),
+                        "other-data",
+                    )
+                )
+            )
+            c.execute(
+                sa.insert(ExpenseCategory).values(
+                    **database_values(
+                        "expense_categories",
+                        canonical_record(
+                            "expense_categories",
+                            {
+                                "id": "other-app-category",
+                                "name": "other app",
+                                "iconId": "custom",
+                            },
+                        ),
+                        "other-data",
+                    )
                 )
             )
         environment = {

@@ -60,7 +60,8 @@ class ProbeConnector extends PowerSyncBackendConnector {
     if (transaction == null) return;
     final mutations = <Map<String, dynamic>>[];
     for (final entry in transaction.crud) {
-      if (entry.table != 'expenses' || entry.metadata == null) {
+      if (!{'expenses', 'assets', 'expense_categories'}.contains(entry.table) ||
+          entry.metadata == null) {
         throw StateError('Unmapped queued mutation; leaving it pending');
       }
       final metadata = jsonDecode(entry.metadata!) as Map<String, dynamic>;
@@ -70,7 +71,9 @@ class ProbeConnector extends PowerSyncBackendConnector {
       mutations.add(metadata);
     }
     final result = await request(
-      '/v1/sync/upload',
+      mutations.first.containsKey('entity_type')
+          ? '/v2/sync/upload'
+          : '/v1/sync/upload',
       body: {
         'dataset_id': datasetId,
         'client_id': await database.getClientId(),
@@ -153,6 +156,72 @@ Future<void> saveExpense(
     await tx.execute(
       'INSERT OR REPLACE INTO mutation_heads(id,base_version,mutation_id) VALUES(?,?,?)',
       [id, base, mutationId],
+    );
+  });
+}
+
+Future<void> saveBusiness(
+  PowerSyncDatabase database,
+  String dataset,
+  String table,
+  Map<String, dynamic> record, {
+  bool delete = false,
+}) async {
+  final columns = table == 'assets'
+      ? {
+          'name': 'name',
+          'price': 'price',
+          'purchaseDate': 'purchase_date',
+          'category': 'category',
+          'residualValue': 'residual_value',
+          'targetDailyCost': 'target_daily_cost',
+          'icon': 'icon_name',
+          'color': 'color_value',
+          'includeInLivingCost': 'include_in_living_cost',
+          'note': 'note',
+          'sortOrder': 'sort_order',
+        }
+      : {'name': 'name', 'iconId': 'icon_id', 'sortOrder': 'sort_order'};
+  final id = record['id'] as String, headId = jsonEncode([table, record['id']]);
+  await database.writeTransaction((tx) async {
+    final existing = await tx.getOptional('SELECT * FROM $table WHERE id=?', [
+      id,
+    ]);
+    final base = existing?['row_version'] as int? ?? 0;
+    final head = await tx.getOptional(
+      'SELECT * FROM business_mutation_heads WHERE id=?',
+      [headId],
+    );
+    final mutation = const Uuid().v4();
+    final metadata = jsonEncode({
+      'entity_type': table,
+      'mutation_id': mutation,
+      'record_id': id,
+      'base_version': base,
+      'predecessor': (head?['base_version']) == base
+          ? (head?['mutation_id'])
+          : null,
+      'kind': delete ? 'delete' : 'put',
+      'record': delete ? null : record,
+    });
+    final values = [
+      id,
+      dataset,
+      for (final key in columns.keys)
+        key == 'includeInLivingCost'
+            ? (record[key] == true ? 1 : 0)
+            : record[key],
+      base,
+      delete ? DateTime.now().toUtc().toIso8601String() : null,
+      metadata,
+    ];
+    await tx.execute(
+      'INSERT OR REPLACE INTO $table(id,dataset_id,${columns.values.join(',')},row_version,deleted_at,_metadata) VALUES(${List.filled(values.length, '?').join(',')})',
+      values,
+    );
+    await tx.execute(
+      'INSERT OR REPLACE INTO business_mutation_heads(id,base_version,mutation_id) VALUES(?,?,?)',
+      [headId, base, mutation],
     );
   });
 }
