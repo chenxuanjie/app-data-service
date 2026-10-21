@@ -344,7 +344,7 @@ def main():
         "".join(item["sha256"] + "  " + item["file"] + "\n" for item in archives),
         encoding="utf-8",
     )
-    shutil.copyfile(ROOT / "docs/synology-test.md", delivery / "README.md")
+    shutil.copyfile(ROOT / "docs/release-guide.md", delivery / "README.md")
     output.mkdir(parents=True, exist_ok=True)
     # Promote only after every compressed archive and the live stack have passed.
     for path in delivery.rglob("*"):
