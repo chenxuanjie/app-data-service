@@ -4,14 +4,38 @@ import re
 from datetime import date
 from typing import Literal
 
+from .business_documents import DOCUMENT_ENTITIES, canonical_document_record
 from .expenses import ExpenseRecord, _string, amount_from_json, legacy_record
-from .models import Asset, Expense, ExpenseCategory
+from .models import (
+    Asset,
+    AssetAllocation,
+    BusinessPreference,
+    Expense,
+    ExpenseCategory,
+    PayrollRecord,
+)
 
-EntityType = Literal["expenses", "assets", "expense_categories"]
-ENTITY_MODELS = {"expenses": Expense, "assets": Asset, "expense_categories": ExpenseCategory}
+EntityType = Literal[
+    "expenses",
+    "assets",
+    "expense_categories",
+    "payroll_records",
+    "asset_allocations",
+    "business_preferences",
+]
+ENTITY_MODELS = {
+    "expenses": Expense,
+    "assets": Asset,
+    "expense_categories": ExpenseCategory,
+    "payroll_records": PayrollRecord,
+    "asset_allocations": AssetAllocation,
+    "business_preferences": BusinessPreference,
+}
 
 
 def canonical_record(entity_type: EntityType, value: dict) -> dict:
+    if entity_type in DOCUMENT_ENTITIES:
+        return canonical_document_record(entity_type, value)
     if entity_type == "expenses":
         if not isinstance(value.get("amount"), str):
             raise ValueError("Upload money must use decimal strings")
@@ -81,6 +105,14 @@ def canonical_record(entity_type: EntityType, value: dict) -> dict:
 
 
 def database_values(entity_type: EntityType, value: dict, dataset_id: str) -> dict:
+    if entity_type in DOCUMENT_ENTITIES:
+        return {
+            "id": value["id"],
+            "dataset_id": dataset_id,
+            "name": value["name"],
+            "payload": value["payload"],
+            "sort_order": value["sortOrder"],
+        }
     if entity_type == "expenses":
         result = ExpenseRecord.from_legacy_json(
             {k: v for k, v in value.items() if k != "categoryId"}, position=0

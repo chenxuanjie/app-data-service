@@ -1,5 +1,7 @@
 # 最小同步 API
 
+> 历史阶段记录：当前版本为 API 0.3.0，六类业务、个人账本确认及升级步骤见 [全业务同步](complete-business-sync.md)。旧镜像、dirty 包及旧验收范围不能作为本轮交付依据。
+
 API 0.2.0 已增加兼容的多类型 v2 接口；见 [多类型同步](multi-entity-sync.md)。以下为保留的 v1 契约。
 
 本阶段验证固定支出闭环。FastAPI 是认证与业务写入口，PowerSync 管理上传队列、

@@ -1,5 +1,7 @@
 # 多类型同步基础：API 0.2.0
 
+> 历史阶段记录：当前版本为 API 0.3.0，六类业务、个人账本确认及升级步骤见 [全业务同步](complete-business-sync.md)。旧镜像、dirty 包及旧验收范围不能作为本轮交付依据。
+
 2026-10-21，分支 `feature/multi-entity-sync`。已实现服务端与客户端协议基础，
 折日原物品和分类页面的显式导入、数据源切换仍为下一阶段。
 本轮已在本机构建并完整验证 API 0.2.0 镜像，更新 `release/fastapi-0.2.0.tar.gz` 和配套 Compose；PostgreSQL 17.11 与 PowerSync 1.27.0 镜像未变。未上传或部署到真实 NAS。

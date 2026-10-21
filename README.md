@@ -1,7 +1,7 @@
 # Flutter 应用数据服务
 
-源码已进入 0.2.0 多类型同步阶段，详见 [接口与升级说明](docs/multi-entity-sync.md)。
-API 0.2.0 镜像和配套 Compose 已在本地构建验证，尚未部署到真实 NAS；原折日物品页面仍待显式接入。
+源码版本 0.3.0，已补齐工资、资产配置、业务设置和个人账本确认，详见 [全业务接口与升级说明](docs/complete-business-sync.md)。
+折日六类业务统一采用 PostgreSQL + FastAPI + PowerSync，客户端保留 SQLite 离线副本；旧 WebDAV 业务同步已退役。
 
 已完成 PostgreSQL 基础、PowerSync + FastAPI 容器链路与折日独立同步测试入口。
 应用以离线使用为主，服务器负责同步；本项目不要求手机直接连接 PostgreSQL。
@@ -18,7 +18,7 @@ API 0.2.0 镜像和配套 Compose 已在本地构建验证，尚未部署到真�
 
 已加入 DSM 登录、会话刷新/退出、单入口同步网关、三服务自包含 Compose 和镜像导入包。
 本地完整 Docker 验证使用严格 TLS DSM 替身；真实 DSM 和 NAS 部署仍待验收。
-当前没有：折日正式业务切换、生产数据迁移、备份、共享账本或管理后台。
+已实现显式迁入与原地确认个人账本，不自动操作真实账号或 NAS。当前没有备份、共享账本或管理后台。
 `seed-demo` 只创建本地测试身份，不代表通过了 DSM 登录验证。
 Git 按 [Git Flow](docs/git-flow.md) 开发：`main` / `develop` / `feature/*`。
 PostgreSQL 基础已在 `feature/postgres-foundation` 提交并合入 `develop`；

@@ -60,7 +60,14 @@ class ProbeConnector extends PowerSyncBackendConnector {
     if (transaction == null) return;
     final mutations = <Map<String, dynamic>>[];
     for (final entry in transaction.crud) {
-      if (!{'expenses', 'assets', 'expense_categories'}.contains(entry.table) ||
+      if (!{
+            'expenses',
+            'assets',
+            'expense_categories',
+            'payroll_records',
+            'asset_allocations',
+            'business_preferences',
+          }.contains(entry.table) ||
           entry.metadata == null) {
         throw StateError('Unmapped queued mutation; leaving it pending');
       }
@@ -167,7 +174,14 @@ Future<void> saveBusiness(
   Map<String, dynamic> record, {
   bool delete = false,
 }) async {
-  final columns = table == 'assets'
+  final columns =
+      [
+        'payroll_records',
+        'asset_allocations',
+        'business_preferences',
+      ].contains(table)
+      ? {'name': 'name', 'payload': 'payload', 'sortOrder': 'sort_order'}
+      : table == 'assets'
       ? {
           'name': 'name',
           'price': 'price',
@@ -208,7 +222,9 @@ Future<void> saveBusiness(
       id,
       dataset,
       for (final key in columns.keys)
-        key == 'includeInLivingCost'
+        key == 'payload'
+            ? jsonEncode(record[key])
+            : key == 'includeInLivingCost'
             ? (record[key] == true ? 1 : 0)
             : record[key],
       base,

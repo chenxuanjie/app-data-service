@@ -128,6 +128,7 @@ def run() -> None:
                 "directory": str(directory),
                 "api": "http://127.0.0.1:18280",
                 "multi_entity": True,
+                "full_business": True,
                 "tokens": {
                     user: authority.issue(user, API_AUDIENCE, seconds=900)
                     for user in ["alice", "bob"]

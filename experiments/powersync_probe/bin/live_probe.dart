@@ -295,6 +295,180 @@ Future<void> main(List<String> args) async {
       );
       checks.add('typed_delete_reconnect_converges');
     }
+    if (config['full_business'] == true) {
+      const tables = [
+        'payroll_records',
+        'asset_allocations',
+        'business_preferences',
+      ];
+      final records = <String, Map<String, dynamic>>{
+        'payroll_records': {
+          'id': 'live-payroll',
+          'name': '2026-10',
+          'sortOrder': 0,
+          'payload': {
+            'monthKey': '2026-10',
+            'salary': '10000.123456',
+            'personalConsumption': '1000',
+            'foodBudget': '100',
+            'rentProperty': '2000',
+            'parentSupport': '1200',
+            'allocations': [],
+            'recordedAt': '2026-10-21T12:00:00Z',
+            'fixedSavings': '1000',
+            'investmentRatio': '0.8',
+            'savingsRatio': '0.2',
+            'note': '历史月份',
+            'updatedAt': null,
+          },
+        },
+        'asset_allocations': {
+          'id': 'live-allocation',
+          'name': '配置原值',
+          'sortOrder': 0,
+          'payload': {
+            'color': 4294967295,
+            'currentAmount': '5000.123456',
+            'ruleType': 'target',
+            'ruleRatio': '0.333333333333333333',
+            'historicalHighPrice': '100',
+            'addPositionSteps': [],
+          },
+        },
+        'business_preferences': {
+          'id': 'live-preference',
+          'name': 'allocation_baseline',
+          'sortOrder': 0,
+          'payload': '30000.123456',
+        },
+      };
+      Future<Map<String, dynamic>?> docRow(
+        PowerSyncDatabase db,
+        String entity,
+      ) => db.getOptional('SELECT * FROM $entity WHERE id=?', [
+        records[entity]!['id'],
+      ]);
+      await a.disconnect();
+      for (final entity in tables)
+        await saveBusiness(a, aliceDataset, entity, records[entity]!);
+      final sameClient = await a.getClientId();
+      await a.close();
+      a = database('alice-a');
+      await a.initialize();
+      check(
+        await a.getClientId() == sameClient,
+        'Full business client changed on restart',
+      );
+      await a.connect(connector: ca);
+      await drain(a);
+      for (final entity in tables) {
+        await until(
+          () async => (await docRow(b, entity))?['row_version'] == 1,
+          '$entity downloaded',
+        );
+        final payload = jsonDecode(
+          (await docRow(b, entity))!['payload'] as String,
+        );
+        check(jsonEncode(payload) != 'null', 'Document missing');
+        check(
+          await docRow(bob, entity) == null,
+          'Full business leaked to other account',
+        );
+      }
+      checks.add(
+        'full_business_offline_restart_and_three_entity_replication_isolation',
+      );
+      for (final entity in tables) {
+        await a.disconnect();
+        await b.disconnect();
+        final original = records[entity]!;
+        final winner = {
+          ...original,
+          'payload': entity == 'business_preferences'
+              ? '40000'
+              : {
+                  ...original['payload'] as Map,
+                  entity == 'payroll_records' ? 'salary' : 'currentAmount':
+                      '6000',
+                },
+        };
+        final candidate = {
+          ...original,
+          'payload': entity == 'business_preferences'
+              ? '50000'
+              : {
+                  ...original['payload'] as Map,
+                  entity == 'payroll_records' ? 'salary' : 'currentAmount':
+                      '7000',
+                },
+        };
+        await saveBusiness(a, aliceDataset, entity, winner);
+        await saveBusiness(b, aliceDataset, entity, candidate);
+        await a.connect(connector: ca);
+        await drain(a);
+        await until(
+          () async => (await docRow(a, entity))?['row_version'] == 2,
+          '$entity winner',
+        );
+        await b.connect(connector: cb);
+        await drain(b);
+        final conflicts = await cb.request(
+          '/v2/conflicts?dataset_id=$aliceDataset',
+          get: true,
+        );
+        final conflict = (conflicts['conflicts'] as List)
+            .cast<Map>()
+            .singleWhere((e) => e['entity_type'] == entity);
+        await cb.request(
+          '/v2/conflicts/${conflict['id']}/resolve',
+          body: {
+            'entity_type': entity,
+            'choice': 'candidate',
+            'expected_version': 2,
+          },
+        );
+        await until(
+          () async =>
+              (await docRow(a, entity))?['row_version'] == 3 &&
+              (await docRow(b, entity))?['row_version'] == 3,
+          '$entity conflict resolved',
+        );
+      }
+      checks.add(
+        'full_business_payroll_allocation_preference_conflicts_resolve_and_replicate',
+      );
+      final promoted = await ca.request(
+        '/v2/datasets/$aliceDataset/promote',
+        body: {},
+      );
+      check(
+        promoted['dataset_id'] == aliceDataset &&
+            promoted['dataset_kind'] == 'personal',
+        'Promotion changed identity',
+      );
+      await b.disconnect();
+      for (final entity in tables)
+        await saveBusiness(
+          b,
+          aliceDataset,
+          entity,
+          records[entity]!,
+          delete: true,
+        );
+      await b.connect(connector: cb);
+      await drain(b);
+      for (final entity in tables) {
+        await until(
+          () async =>
+              await docRow(a, entity) == null &&
+              await docRow(b, entity) == null,
+          '$entity deleted after promotion',
+        );
+      }
+      checks.add(
+        'full_business_personal_promotion_preserves_queue_and_delete_converges',
+      );
+    }
     stdout.writeln(
       jsonEncode({'passed': checks, 'platform': Platform.operatingSystem}),
     );

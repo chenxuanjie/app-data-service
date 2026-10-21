@@ -99,7 +99,7 @@ def create_app(
         if dispose_engine:
             engine.dispose()
 
-    app = FastAPI(title="App Data Service", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="App Data Service", version="0.3.0", lifespan=lifespan)
     app.add_middleware(BoundedBody)
     if allowed_origins:
         app.add_middleware(
@@ -302,14 +302,36 @@ def create_app(
                 "datasets": [
                     dict(row)
                     for row in connection.execute(
-                        sa.select(Dataset.id, Dataset.name).where(Dataset.app_id == "zheri")
+                        sa.select(Dataset.id, Dataset.name, Dataset.kind).where(
+                            Dataset.app_id == "zheri"
+                        )
                     ).mappings()
                 ]
             }
 
     @app.get("/v1/capabilities")
     def capabilities(actor: Actor):
-        return {"sync_protocols": [1, 2], "entities": list(ENTITY_MODELS), "max_mutations": 100}
+        return {
+            "sync_protocols": [1, 2],
+            "entities": list(ENTITY_MODELS),
+            "max_mutations": 100,
+            "dataset_promotion": True,
+        }
+
+    @app.post("/v2/datasets/{dataset_id}/promote")
+    def promote_dataset(dataset_id: str, actor: Actor):
+        with user_transaction(engine, actor) as connection:
+            owner = connection.scalar(
+                sa.select(Dataset.id).where(
+                    Dataset.id == dataset_id, Dataset.owner_id == actor, Dataset.app_id == "zheri"
+                )
+            )
+            if owner is None:
+                raise ScopeError("Dataset unavailable")
+            result = connection.scalar(
+                sa.text("SELECT core.promote_personal_dataset(:id)"), {"id": dataset_id}
+            )
+        return {"dataset_id": result, "dataset_kind": "personal"}
 
     @app.post("/v2/sync/upload")
     def upload_v2(body: UploadV2, actor: Actor):

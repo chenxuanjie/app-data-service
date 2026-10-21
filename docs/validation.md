@@ -1,5 +1,7 @@
 # 验证状态
 
+> 历史阶段记录：当前版本为 API 0.3.0，六类业务、个人账本确认及升级步骤见 [全业务同步](complete-business-sync.md)。旧镜像、dirty 包及旧验收范围不能作为本轮交付依据。
+
 更新：2026-10-21。PostgreSQL 基础已合入 develop；完整同步与部署工作位于
 feature/powersync-sync。折日位于 codex/data-service-sync，新增独立测试入口。
 真实 NAS、真实 DSM 和三端运行验收仍待完成；此记录不代表生产迁移完成。

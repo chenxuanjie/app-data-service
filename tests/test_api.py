@@ -76,7 +76,9 @@ def post(api, body):
 def test_authentication_and_distinct_audiences(api, authority):
     assert api.get("/.well-known/jwks.json").json() == {"keys": [authority.jwk]}
     assert not {"d", "p", "q"} & authority.jwk.keys()
-    assert api.get("/v1/datasets").json()["datasets"] == [{"id": "alice-data", "name": "甲"}]
+    assert api.get("/v1/datasets").json()["datasets"] == [
+        {"id": "alice-data", "name": "甲", "kind": "trial"}
+    ]
     credentials = api.post("/v1/sync/credentials").json()
     claims = jwt.decode(
         credentials["token"],

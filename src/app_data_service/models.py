@@ -37,6 +37,7 @@ class Dataset(Base):
     app_id: Mapped[str] = mapped_column(sa.ForeignKey("core.apps.id"))
     owner_id: Mapped[str] = mapped_column(sa.ForeignKey("core.users.id"))
     name: Mapped[str] = mapped_column(sa.Text)
+    kind: Mapped[str] = mapped_column(sa.Text, server_default="trial")
 
 
 class DatasetMember(Base):
@@ -235,3 +236,31 @@ class AppSession(Base):
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now()
     )
+
+
+class BusinessDocumentMixin:
+    id: Mapped[str] = mapped_column(sa.Text, primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(sa.ForeignKey("core.datasets.id"))
+    name: Mapped[str] = mapped_column(sa.Text)
+    payload: Mapped[dict] = mapped_column(JSONB)
+    sort_order: Mapped[int] = mapped_column(sa.BigInteger)
+    row_version: Mapped[int] = mapped_column(sa.BigInteger, server_default="1")
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+
+
+class PayrollRecord(BusinessDocumentMixin, Base):
+    __tablename__ = "payroll_records"
+    __table_args__ = {"schema": "zheri"}
+
+
+class AssetAllocation(BusinessDocumentMixin, Base):
+    __tablename__ = "asset_allocations"
+    __table_args__ = {"schema": "zheri"}
+
+
+class BusinessPreference(BusinessDocumentMixin, Base):
+    __tablename__ = "business_preferences"
+    __table_args__ = {"schema": "zheri"}

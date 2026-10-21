@@ -101,8 +101,16 @@ def test_mixed_upload_exact_money_date_color_and_category_reference(client, db):
         )
     assert client.get("/v1/capabilities").json() == {
         "sync_protocols": [1, 2],
-        "entities": ["expenses", "assets", "expense_categories"],
+        "entities": [
+            "expenses",
+            "assets",
+            "expense_categories",
+            "payroll_records",
+            "asset_allocations",
+            "business_preferences",
+        ],
         "max_mutations": 100,
+        "dataset_promotion": True,
     }
 
 
