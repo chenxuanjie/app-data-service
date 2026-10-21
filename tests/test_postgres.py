@@ -35,7 +35,7 @@ def sqlstate(error):
 def test_real_postgres_migration_and_publication(db):
     report = inspect_database(db.urls["migrator"])
     assert report["postgres"].startswith("17.")
-    assert report["revision"] == "0002_import_record_scope"
+    assert report["revision"] == "0004_account_sessions"
     assert report["wal_level"] == "logical"
     assert report["publication"] == ["core.dataset_members", "core.datasets", "zheri.expenses"]
     assert report["sync_connected"] is False

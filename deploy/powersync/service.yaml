@@ -1,0 +1,24 @@
+_type: self-hosted
+replication:
+  connections:
+    - type: postgresql
+      uri: !env PS_DATA_SOURCE_URI
+      sslmode: disable
+      max_pool_size: 4
+      connect_timeout: 5
+      heartbeat_interval_seconds: 5
+storage:
+  type: postgresql
+  uri: !env PS_STORAGE_SOURCE_URI
+  sslmode: disable
+  max_pool_size: 4
+  connect_timeout: 5
+  default_storage_version: 2
+port: 8080
+sync_config:
+  path: sync-config.yaml
+client_auth:
+  jwks_uri: !env PS_JWKS_URL
+  audience: [app-data-powersync]
+telemetry:
+  disable_telemetry_sharing: true

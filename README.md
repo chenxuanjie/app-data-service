@@ -1,6 +1,6 @@
 # Flutter 应用数据服务
 
-当前为 PostgreSQL 基础阶段，优先服务折日，后续接入 PowerSync 与 FastAPI。
+已完成 PostgreSQL 基础、PowerSync + FastAPI 容器链路与折日独立同步测试入口。
 应用以离线使用为主，服务器负责同步；本项目不要求手机直接连接 PostgreSQL。
 
 已实现：
@@ -10,9 +10,16 @@
 - 旧固定支出 JSON 的严格转换、导入预览、同批幂等导入、事务和对账记录。
 - PowerSync 的明确表 publication、逻辑复制配置，没有闲置复制槽。
 - 独立的 PowerSync/Drift 离线兼容实验，不接触现有折日数据库。
+- FastAPI 的 RS256/JWKS 验证、短期同步令牌、幂等上传、冲突双方版本与选择 API。
+- PowerSync 1.27.0 + PostgreSQL bucket 存储的本地真实链路实验，包含两个同账号客户端及另一个账号。
 
-当前没有：NAS 登录 API、在线双向同步、生产数据迁移、备份、共享账本或管理后台。
+已加入 DSM 登录、会话刷新/退出、单入口同步网关、三服务自包含 Compose 和镜像导入包。
+本地完整 Docker 验证使用严格 TLS DSM 替身；真实 DSM 和 NAS 部署仍待验收。
+当前没有：折日正式业务切换、生产数据迁移、备份、共享账本或管理后台。
 `seed-demo` 只创建本地测试身份，不代表通过了 DSM 登录验证。
+Git 按 [Git Flow](docs/git-flow.md) 开发：`main` / `develop` / `feature/*`。
+PostgreSQL 基础已在 `feature/postgres-foundation` 提交并合入 `develop`；
+当前工作分支为 `feature/powersync-sync`，尚未创建生产发布版本。
 
 ## 本地开发
 
@@ -67,6 +74,11 @@ Docker 必须先运行。部分 WSL 配置在无前台 Linux 命令时会停止�
 
 ## 群晖部署配置
 
+本阶段请使用 [群晖测试部署与验收](docs/synology-test.md) 的完整服务包。
+其中包含 PostgreSQL、API 和 PowerSync；数据库迁移由API启动命令先行执行，不单列停止容器。
+不需要在 NAS 安装 Python。
+下面保留的 `render_synology.py` 是早期仅数据库配置，不用于本轮完整同步测试。
+
 ```powershell
 .venv\Scripts\python tools/render_synology.py --data-directory /volume1/docker/app-data-service/postgres
 ```
@@ -102,7 +114,47 @@ dart compile js bin/web_compile_probe.dart -o ../../.local/web_compile_probe.js
 ```
 
 实验锁定 PowerSync 2.5.0、Drift 2.34.3、drift_sqlite_async 0.3.1、SQLite3 3.5.1。
-没有连接真实服务的代码；它验证本地写入、队列持久化、重启和查询适配。
+离线测试验证本地写入、队列持久化、重启和查询适配；真实链路按下一节运行。
 JavaScript 编译通过不能代替浏览器运行、Android 或完整 Windows 应用验收。
 
-参见 [数据字典](docs/database.md) 与 [验证状态](docs/validation.md)。
+## 最小双向同步实验
+
+先启动开发 PostgreSQL、安装更新后的锁定依赖，并在实验目录执行 `dart pub get`。
+本地 Docker 需要固定版本的官方镜像 `journeyapps/powersync-service:1.27.0`。
+容器使用现有开发网络，PowerSync 的 source / bucket 是两个隔离临时数据库。
+FastAPI 在宿主机回环地址运行，不要求 Docker 中另装 Python。
+
+```powershell
+docker pull journeyapps/powersync-service:1.27.0
+.venv\Scripts\python tools/run_sync_probe.py --docker native --dart dart
+# Docker 位于本机 Ubuntu WSL 时，改用 --docker wsl
+```
+
+实验端口为 `127.0.0.1:18280`（API）和 `127.0.0.1:18290`（PowerSync），
+占用时明确报错，不停止其他程序。只绑定回环地址，不启动折日 Web 预览。
+工具生成随机签名密钥和临时应用令牌；没有“提交任意用户 ID 就登录”的 HTTP 端点。
+PowerSync 实验使用静态公钥，避免容器访问宿主机的额外网络配置；正常服务配置
+保留 JWKS URI。正式服务已提供 DSM 验证后换取应用会话的路径；此旧探测工具仍使用维护端测试身份。
+
+验证：离线新增与连续编辑 → 关闭重开 → API 上传 → PostgreSQL 逻辑复制 →
+另一个 SQLite 客户端。还模拟已提交响应丢失、重复上传、同条记录两端并发、
+保留双方版本、选择候选后下行、离线删除重连，以及账号/应用下行隔离。
+上传金额必须是十进制字符串；数据库负责版本和修改时间。
+
+实验结束清理本次临时容器、两库、存储角色和复制槽，保留 `.local/` 下日志、
+结果与本地 SQLite 供排查。不会删除 `app_data` 或开发卷，也不接触真实 NAS。
+`result.json` 是结构化结果，日志和令牌均不得提交。
+
+手动运行 API 的环境契约和上传规则见 [同步 API](docs/sync-api.md)。
+该实验不是折日的最终数据层，也不是已交付的群晖一键安装包。
+
+## 完整容器验证与交付
+
+`tools/render_stack.py` 生成完整测试配置，`tools/build_docker_bundle.py` 构建镜像、
+分别导出三个镜像为独立 tar.gz、逐包重新导入并运行 `tools/verify_stack.py`。只有验证通过才替换交付文件。
+交付集中在 `release/` 根目录，包名为 `fastapi-0.1.0.tar.gz`、`postgresql-17.11.tar.gz`、`powersync-1.27.0.tar.gz`，报告收在 `metadata/`，后续仅API更新使用 `--api-only`，无需重传未变化的数据库与同步镜像。
+验证器使用随机隔离的容器、卷、数据库及严格 TLS DSM 替身，不访问真实 NAS。
+API 镜像以 UID 10001 运行，构建上下文不含 `.local`、密钥或本地数据库。
+本次具体文件、重建方法和手动验收步骤见 [群晖测试部署与验收](docs/synology-test.md)。
+
+参见 [数据字典](docs/database.md)、[同步 API](docs/sync-api.md) 与 [验证状态](docs/validation.md)。

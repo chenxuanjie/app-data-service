@@ -11,6 +11,9 @@ build/
 coverage.xml
 .coverage
 deploy/compose.synology.yaml
+deploy/compose.synology-test.yaml
+release/
+.docker-wheels/
 .dart_tool/
 **/.dart_tool/
 **/build/

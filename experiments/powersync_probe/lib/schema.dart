@@ -16,5 +16,9 @@ const expenseSchema = Schema([
     Column.integer('row_version'),
     Column.text('updated_at'),
     Column.text('deleted_at'),
+  ], trackMetadata: true),
+  Table.localOnly('mutation_heads', [
+    Column.integer('base_version'),
+    Column.text('mutation_id'),
   ]),
 ]);
