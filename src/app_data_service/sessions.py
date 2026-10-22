@@ -25,6 +25,7 @@ class SessionManager:
         self, engine, authority: TokenAuthority, provider: DsmProvider, encryption_key: bytes
     ):
         self.engine, self.authority, self.provider = engine, authority, provider
+        self.browser_csrf_key = hashlib.sha256(b"browser-csrf-v1|" + encryption_key).digest()
         self.cipher = Fernet(base64.urlsafe_b64encode(hashlib.sha256(encryption_key).digest()))
 
     def access(self, actor: str, session_id) -> str:

@@ -8,6 +8,7 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
@@ -26,6 +27,7 @@ from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 
 from .auth import SYNC_AUDIENCE, TokenAuthority
+from .browser_sessions import BrowserSessions
 from .config import database_url, make_engine
 from .dsm import DsmFailure, DsmProvider
 from .entities import ENTITY_MODELS
@@ -92,7 +94,16 @@ def create_app(
     sessions: SessionManager | None = None,
     proxy_upstream: str | None = None,
     allowed_origins: list[str] | None = None,
+    browser_origin: str | None = None,
 ) -> FastAPI:
+    endpoint = urlsplit(sync_endpoint)
+    if (
+        endpoint.scheme not in {"https", "http"}
+        or not endpoint.hostname
+        or (endpoint.username or endpoint.password or endpoint.query or endpoint.fragment)
+    ):
+        raise ValueError("A public sync endpoint without credentials is required")
+
     @asynccontextmanager
     async def lifespan(_):
         yield
@@ -115,6 +126,13 @@ def create_app(
             allow_credentials=False,
         )
     bearer = HTTPBearer(auto_error=False)
+
+    @app.get("/v1/client-config")
+    def client_config():
+        return {
+            "api_origin": f"{endpoint.scheme}://{endpoint.netloc}",
+            "browser_sessions": bool(sessions and browser_origin),
+        }
 
     def identity(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
@@ -200,8 +218,7 @@ def create_app(
         quota: OrderedDict[str, tuple[float, int]] = OrderedDict()
         capacity = asyncio.Semaphore(4)
 
-        @app.post("/v1/auth/login")
-        async def login(body: Login, request: Request):
+        async def authenticate(body: Login, request: Request):
             key = request.client.host if request.client else "unknown"
             now = time.monotonic()
             start, count = quota.get(key, (now, 0))
@@ -229,6 +246,65 @@ def create_app(
                 raise DsmFailure("provider_unavailable", 503) from error
             finally:
                 capacity.release()
+
+        @app.post("/v1/auth/login")
+        async def login(body: Login, request: Request):
+            return JSONResponse(
+                await authenticate(body, request), headers={"Cache-Control": "no-store"}
+            )
+
+        if browser_origin:
+            browser = BrowserSessions(sessions, browser_origin)
+
+            @app.post("/v1/auth/browser/bootstrap")
+            async def browser_bootstrap(request: Request):
+                # Same quota as authentication; no uncontrolled anonymous session allocation.
+                key = "browser:" + (request.client.host if request.client else "unknown")
+                now = time.monotonic()
+                start, count = quota.get(key, (now, 0))
+                if now - start >= 60:
+                    start, count = now, 0
+                quota[key] = (start, count + 1)
+                quota.move_to_end(key)
+                if len(quota) > 1024:
+                    quota.popitem(last=False)
+                if count >= 30:
+                    raise HTTPException(429, "rate_limited")
+                return await asyncio.to_thread(browser.bootstrap, request)
+
+            @app.post("/v1/auth/browser/login")
+            async def browser_login(body: Login, request: Request):
+                identifier = browser.check(request)
+                await asyncio.to_thread(browser.begin_login, identifier)
+                result = None
+                try:
+                    result = await authenticate(body, request)
+                    data = await asyncio.to_thread(browser.finish_login, identifier, result)
+                    return JSONResponse(data, headers={"Cache-Control": "no-store"})
+                except Exception:
+                    if result:
+                        claims = authority.claims(
+                            result["refresh_token"],
+                            audience=REFRESH_AUDIENCE,
+                            maximum_age=REFRESH_LIFETIME,
+                        )
+                        context = await asyncio.to_thread(
+                            sessions.revoke, claims["sub"], claims["session_id"]
+                        )
+                        await sessions.provider.logout(context)
+                    await asyncio.to_thread(browser.reset_login, identifier)
+                    raise
+
+            @app.post("/v1/auth/browser/restore")
+            async def browser_restore(request: Request):
+                try:
+                    return await browser.restore(request)
+                except TimeoutError as error:
+                    raise DsmFailure() from error
+
+            @app.post("/v1/auth/browser/logout")
+            async def browser_logout(request: Request):
+                return await browser.logout(request)
 
         @app.post("/v1/auth/refresh")
         async def refresh(body: Refresh):
@@ -454,6 +530,7 @@ def from_environment() -> FastAPI:
             for value in os.environ.get("APP_DATA_ALLOWED_ORIGINS", "").split(",")
             if value.strip()
         ],
+        browser_origin=os.environ.get("APP_DATA_BROWSER_ORIGIN"),
     )
 
 
