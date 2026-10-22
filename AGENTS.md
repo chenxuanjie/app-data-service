@@ -1,7 +1,7 @@
 # 项目约定
 
-- 已完成 PostgreSQL 基础；当前验证 PowerSync + FastAPI 最小双向链路，客户端离线优先。
-- 从固定支出最小功能开始，不实现备份、家庭共享、管理后台或自研同步引擎。
+- 已完成并经用户确认验收 PostgreSQL + PowerSync + FastAPI 六类业务双向同步，客户端离线优先；版本与验证范围见 docs/releases/0.3.0.md。
+- 后续从 develop 另开功能分支；备份、家庭共享、管理后台和自研同步引擎不在本轮范围。
 - 不改真实 NAS、账号权限或生产数据，不自动上传或部署。
 - 数据库验证必须使用真实 PostgreSQL；SQLite 不能代替。
 - 每个请求/连接/锁等待必须有界。金额使用 Decimal/NUMERIC，禁止静默舍入。

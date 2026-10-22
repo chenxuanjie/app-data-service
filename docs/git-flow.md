@@ -4,15 +4,16 @@
 
 | 分支 | 用途 |
 | --- | --- |
-| main | 仓库初始化基线和已验收发布；当前尚无生产版本 |
+| main | 已验收发布；本轮收尾版本为 v0.3.0 |
 | develop | 已完成阶段的集成分支 |
 | feature/* | 从 develop 创建的功能分支，完成验证后以 --no-ff 合入 develop |
 | release/* | 从 develop 创建的发布候选，验收后合入 main 和 develop，打 vX.Y.Z 标签 |
 | hotfix/* | 从 main 创建的线上修复，完成后合入 main 和 develop |
 
-当前数据库基础使用 feature/postgres-foundation；下一阶段使用
-feature/powersync-sync。阶段完成不等同于上线，不为实验代码创建发布标签。
-main 的初始化提交只是 Git 历史起点，不代表业务服务可用于生产。
+数据库基础阶段使用 feature/postgres-foundation，最小同步阶段使用 feature/powersync-sync，
+全业务阶段使用 feature/multi-entity-sync。2026-10-22 用户确认全业务版本验收通过，
+按 release/0.3.0 收尾，详见 [验收记录](releases/0.3.0.md)。
+阶段完成不等同于上线，不为未验收实验代码创建发布标签。
 
 常规命令：
 
