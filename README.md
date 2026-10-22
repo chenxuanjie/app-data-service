@@ -1,6 +1,7 @@
 # Flutter 应用数据服务
 
-源码版本 0.3.0，已补齐工资、资产配置、业务设置和个人账本确认，详见 [全业务接口与升级说明](docs/complete-business-sync.md)。
+源码版本 0.4.0，新增[账号文件与更新 API](docs/account-files.md)及[同源浏览器会话](docs/browser-sessions.md)，尚未部署本轮源码。
+已验收的六类业务 0.3.0 见 [全业务接口与升级说明](docs/complete-business-sync.md)。
 折日六类业务统一采用 PostgreSQL + FastAPI + PowerSync，客户端保留 SQLite 离线副本；旧 WebDAV 业务同步已退役。
 
 已完成 PostgreSQL 基础、PowerSync + FastAPI 容器链路与折日独立同步测试入口。

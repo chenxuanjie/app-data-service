@@ -45,6 +45,24 @@ def test_full_synology_stack_has_private_database_and_stable_identity(monkeypatc
     assert decoded["client_auth"]["jwks_uri"] == "http://api:8000/.well-known/jwks.json"
 
 
+def test_optional_account_file_roots_and_browser_gateway_are_explicit(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
+    renderer = importlib.import_module("render_stack")
+    config = renderer.stack(
+        "/volume1/test/data",
+        "https://data.test",
+        "https://nas.test:5001",
+        browser_origin="https://web.test",
+        updates_root="/apps/zheri/updates",
+        resources_root="/home/Apps/zheri",
+    )
+    env = config["services"]["api"]["environment"]
+    assert env["APP_DATA_BROWSER_ORIGIN"] == "https://web.test"
+    assert env["APP_DATA_UPDATES_ROOT"] == "/apps/zheri/updates"
+    assert env["APP_DATA_RESOURCES_ROOT"] == "/home/Apps/zheri"
+    assert set(config["services"]) == {"api", "postgres", "powersync"}
+
+
 def test_rules_update_preserves_all_private_settings(monkeypatch):
     from copy import deepcopy
 

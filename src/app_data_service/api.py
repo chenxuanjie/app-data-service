@@ -31,6 +31,7 @@ from .browser_sessions import BrowserSessions
 from .config import database_url, make_engine
 from .dsm import DsmFailure, DsmProvider
 from .entities import ENTITY_MODELS
+from .files import AccountFiles
 from .models import Dataset, ExpenseConflict, SyncConflict, User
 from .sessions import REFRESH_AUDIENCE, REFRESH_LIFETIME, SessionManager
 from .store import user_transaction
@@ -95,6 +96,7 @@ def create_app(
     proxy_upstream: str | None = None,
     allowed_origins: list[str] | None = None,
     browser_origin: str | None = None,
+    file_roots: dict[str, str] | None = None,
 ) -> FastAPI:
     endpoint = urlsplit(sync_endpoint)
     if (
@@ -110,7 +112,7 @@ def create_app(
         if dispose_engine:
             engine.dispose()
 
-    app = FastAPI(title="App Data Service", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="App Data Service", version="0.4.0", lifespan=lifespan)
     app.add_middleware(BoundedBody)
     if allowed_origins:
         app.add_middleware(
@@ -151,6 +153,42 @@ def create_app(
             raise HTTPException(401, "Invalid or expired token") from error
 
     Actor = Annotated[str, Depends(identity)]
+
+    if sessions:
+        files = AccountFiles(sessions, file_roots or {})
+
+        @app.get("/v1/services")
+        def service_capabilities(actor: Actor):
+            return {"file_areas": sorted(files.roots), "updates": "updates" in files.roots}
+
+        @app.get("/v1/files/{area}/{path:path}")
+        async def read_file(
+            area: str,
+            path: str,
+            request: Request,
+            actor: Actor,
+            credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+        ):
+            read = await files.open(
+                credentials.credentials, area, path, request.headers.get("range")
+            )
+            return StreamingResponse(
+                read.chunks,
+                status_code=read.status,
+                headers=read.headers,
+                background=BackgroundTask(read.close),
+            )
+
+        @app.get("/v1/updates/manifest")
+        async def update_manifest(
+            actor: Actor,
+            credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+            channel: str = "stable",
+        ):
+            return JSONResponse(
+                await files.manifest(credentials.credentials, channel),
+                headers={"Cache-Control": "no-store"},
+            )
 
     if proxy_upstream:
 
@@ -531,6 +569,14 @@ def from_environment() -> FastAPI:
             if value.strip()
         ],
         browser_origin=os.environ.get("APP_DATA_BROWSER_ORIGIN"),
+        file_roots={
+            area: os.environ[key]
+            for area, key in (
+                ("updates", "APP_DATA_UPDATES_ROOT"),
+                ("resources", "APP_DATA_RESOURCES_ROOT"),
+            )
+            if os.environ.get(key)
+        },
     )
 
 

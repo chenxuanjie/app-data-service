@@ -98,6 +98,14 @@ class SessionManager:
         self.session(claims["sub"], claims.get("session_id"))
         return claims["sub"]
 
+    def upstream_context(self, token: str) -> dict:
+        claims = self.authority.claims(token)
+        row = self.session(claims["sub"], claims.get("session_id"))
+        try:
+            return json.loads(self.cipher.decrypt(row["dsm_context"].encode()))
+        except (InvalidToken, ValueError) as error:
+            raise jwt.InvalidTokenError("Session unavailable") from error
+
     async def refresh(self, token: str) -> dict:
         import asyncio
 

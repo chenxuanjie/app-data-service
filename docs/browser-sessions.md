@@ -27,4 +27,4 @@ bootstrap 与登录有有界频率/并发限制，所有数据库事务、锁和
 重新登录遇到离线退出遗留 Cookie 时，先结束旧会话再创建新会话，不恢复旧账号作为新账号。
 
 不做旧浏览器 WebCrypto 凭据兼容，更新后需重新登录一次；客户端缓存和待上传队列保留。
-文件 API、更新 API、board-game-agent 接入均不在这个已实现阶段内。
+文件与更新 API 已在[第二阶段](account-files.md)加入；board-game-agent 接入仍未修改。

@@ -1,6 +1,15 @@
 # 验证状态
 
-> 历史阶段记录：当前版本为 API 0.3.0，六类业务、个人账本确认及升级步骤见 [全业务同步](complete-business-sync.md)。旧镜像、dirty 包及旧验收范围不能作为本轮交付依据。
+> 下文保留早期阶段记录。已验收业务版本为 API 0.3.0，见 [全业务同步](complete-business-sync.md)。当前功能分支源码为 0.4.0，新增[账号文件与更新](account-files.md)，尚未打包或部署 NAS。
+
+2026-10-22 第二阶段本地验证：ruff check、ruff format --check 和完整 174 项 pytest 全部通过，
+数据库使用独立随机测试库中的真实 PostgreSQL，没有跳过数据库测试。DSM 使用 HTTPX 替身，
+覆盖按当前账号 SID 读取、权限拒绝、退出撤销、只读路径、Range/错误响应和槽位释放。
+测试工具存在一项 Starlette TestClient/httpx 弃用警告，不影响本次结果。
+客户端验证：app_client 分析与 18 项测试，折日分析、完整 174 项测试及 Web Release 构建通过。
+真实 NAS 文件服务、同源网关、Android 系统安装器本轮未实机验证。
+
+## 以下为历史记录
 
 更新：2026-10-21。PostgreSQL 基础已合入 develop；完整同步与部署工作位于
 feature/powersync-sync。折日位于 codex/data-service-sync，新增独立测试入口。

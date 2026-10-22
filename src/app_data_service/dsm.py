@@ -57,6 +57,23 @@ class DsmProvider:
         except TimeoutError as error:
             raise DsmFailure() from error
 
+    @staticmethod
+    def session_headers(context):
+        sid, token = context.get("sid"), context.get("synotoken")
+        if (
+            not isinstance(sid, str)
+            or not sid
+            or not sid.isascii()
+            or any(c in sid for c in "\r\n;")
+        ):
+            raise DsmFailure("session_rejected", 401)
+        headers = {"Cookie": "id=" + sid}
+        if token:
+            if not isinstance(token, str) or not token.isascii() or any(c in token for c in "\r\n"):
+                raise DsmFailure("session_rejected", 401)
+            headers["X-SYNO-TOKEN"] = token
+        return headers
+
     async def _call(self, client, path: str, fields: dict) -> dict:
         if not isinstance(path, str) or not re.fullmatch(
             r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\.cgi", path
