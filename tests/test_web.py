@@ -86,11 +86,12 @@ def test_cookie_csrf_login_restore_and_logout_work_through_alias(web):
     )
 
 
-def test_static_symlink_cannot_disclose_an_outside_file(web, tmp_path):
-    # Symlink creation may require an OS privilege on Windows: use lookup_path
-    # containment directly as the portable boundary check, without skipping.
+def test_static_path_cannot_disclose_an_existing_outside_file(web, tmp_path):
     from app_data_service.web import FlutterFiles
 
+    outside = tmp_path.parent / "outside-secret"
+    outside.write_text("must stay private", encoding="utf-8")
+    assert outside.is_file()
     files = FlutterFiles(directory=tmp_path)
     _, stat = files.lookup_path("../outside-secret")
     assert stat is None
