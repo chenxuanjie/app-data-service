@@ -21,6 +21,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import yaml
+from service_web_bundle import extract_web, verify_web
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -97,6 +98,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compose", type=Path, required=True)
     parser.add_argument("--dart", default=shutil.which("dart") or "dart")
+    parser.add_argument("--web-project", type=Path, required=True)
+    parser.add_argument("--web-archive", type=Path, required=True)
+    parser.add_argument("--web-receipt", type=Path, required=True)
+    parser.add_argument("--source-gate", type=Path, required=True)
     parser.add_argument(
         "--reuse-existing",
         type=Path,
@@ -143,6 +148,9 @@ def main():
     image = f"app-data-service:{version}-{revision[:7]}{'-dirty' if dirty else ''}-{stamp}"
     staging = ROOT / ".local" / ("bundle-" + uuid4().hex[:12])
     staging.mkdir(parents=True)
+    web_input = verify_web(args.web_project, args.web_archive, args.web_receipt, args.source_gate)
+    web_directory = staging / "web"
+    web_input.update(extract_web(args.web_archive, web_directory))
     original = None
     if args.reuse_existing:
         original = json.loads(args.reuse_existing.read_text(encoding="utf-8"))
@@ -151,6 +159,8 @@ def main():
             raise ValueError(
                 "Runtime sources differ from the release; rebuild instead of repacking"
             )
+        if web_input != original.get("web"):
+            raise ValueError("Web sources differ; rebuild instead of repacking")
         version = original["version"]
     else:
         wheels = ROOT / ".docker-wheels"
@@ -203,6 +213,8 @@ def main():
                 "--sbom=false",
                 "--platform",
                 "linux/amd64",
+                "--build-context",
+                "web_assets=" + linux(web_directory),
                 "--label",
                 "org.opencontainers.image.revision=" + revision,
                 "--label",
@@ -283,6 +295,11 @@ def main():
         ],
         timeout=360,
     )
+    # Recheck the Flutter repository/path packages and archive after image validation.
+    if verify_web(args.web_project, args.web_archive, args.web_receipt, args.source_gate) != {
+        key: web_input[key] for key in ("archive", "sha256", "sources")
+    }:
+        raise ValueError("Web input changed during image build")
     if original is None:
         update_sync_rules(
             configuration, (ROOT / "deploy/powersync/sync-config.yaml").read_text(encoding="utf-8")
@@ -331,6 +348,7 @@ def main():
         "dirtyPackaging": dirty,
         "repackedFrom": str(args.reuse_existing.resolve()) if original else None,
         "platform": "linux/amd64",
+        "web": web_input,
         "images": images,
         "imageIds": image_ids,
         "archives": archives,

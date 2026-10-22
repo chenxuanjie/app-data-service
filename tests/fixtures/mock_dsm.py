@@ -1,5 +1,6 @@
 """Strict TLS DSM substitute for local container validation only."""
 
+import hashlib
 import json
 import ssl
 import sys
@@ -8,6 +9,24 @@ from urllib.parse import parse_qs
 from uuid import uuid4
 
 sessions = {}
+APK = b"fixture-apk-for-account-download"
+MANIFEST = {
+    "schemaVersion": 1,
+    "appId": "zheri",
+    "channel": "stable",
+    "versionName": "9.9.9",
+    "buildNumber": 999,
+    "artifacts": [
+        {
+            "platform": "android",
+            "architecture": "arm64",
+            "path": "fixture.apk",
+            "size": len(APK),
+            "sha256": hashlib.sha256(APK).hexdigest(),
+            "mimeType": "application/vnd.android.package-archive",
+        }
+    ],
+}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -26,7 +45,11 @@ class Handler(BaseHTTPRequestHandler):
                 "success": True,
                 "data": {
                     name: {"path": "entry.cgi", "minVersion": 1, "maxVersion": maximum}
-                    for name, maximum in [("SYNO.API.Auth", 7), ("SYNO.FileStation.Info", 2)]
+                    for name, maximum in [
+                        ("SYNO.API.Auth", 7),
+                        ("SYNO.FileStation.Info", 2),
+                        ("SYNO.FileStation.Download", 2),
+                    ]
                 },
             }
         elif fields.get("method") == "login":
@@ -50,6 +73,28 @@ class Handler(BaseHTTPRequestHandler):
             elif fields.get("method") == "logout":
                 sessions.pop(sid)
                 body = {"success": True}
+            elif fields.get("api") == "SYNO.FileStation.Download":
+                path = json.loads(fields["path"])
+                if sessions[sid] != 10001:
+                    body = {"success": False, "error": {"code": 407}}
+                elif path not in [
+                    ["/fixture/updates/manifest.json"],
+                    ["/fixture/updates/fixture.apk"],
+                ]:
+                    body = {"success": False, "error": {"code": 408}}
+                else:
+                    payload = json.dumps(MANIFEST).encode() if path[0].endswith(".json") else APK
+                    start = int(self.headers.get("Range", "bytes=0-")[6:-1])
+                    self.send_response(206 if start else 200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(payload) - start))
+                    if start:
+                        self.send_header(
+                            "Content-Range", f"bytes {start}-{len(payload) - 1}/{len(payload)}"
+                        )
+                    self.end_headers()
+                    self.wfile.write(payload[start:])
+                    return
             else:
                 body = {"success": True, "data": {"uid": sessions[sid]}}
         encoded = json.dumps(body).encode()

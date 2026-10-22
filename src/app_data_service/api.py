@@ -47,6 +47,7 @@ from .sync import (
     resolve_conflict,
     snapshot,
 )
+from .web import SameOriginWeb
 
 
 class BoundedBody:
@@ -97,6 +98,7 @@ def create_app(
     allowed_origins: list[str] | None = None,
     browser_origin: str | None = None,
     file_roots: dict[str, str] | None = None,
+    web_directory: Path | None = None,
 ) -> FastAPI:
     endpoint = urlsplit(sync_endpoint)
     if (
@@ -532,6 +534,8 @@ def create_app(
             result = resolve_conflict(connection, conflict_id, body)
         return result
 
+    if web_directory is not None:
+        app.add_middleware(SameOriginWeb, directory=web_directory)
     return app
 
 
@@ -577,6 +581,9 @@ def from_environment() -> FastAPI:
             )
             if os.environ.get(key)
         },
+        web_directory=Path(os.environ["APP_DATA_WEB_DIRECTORY"])
+        if os.environ.get("APP_DATA_WEB_DIRECTORY")
+        else None,
     )
 
 
