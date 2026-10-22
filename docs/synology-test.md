@@ -1,7 +1,9 @@
 # 群晖测试部署与验收
 
-2026-10-21：本地完整 Docker 验证和折日测试 APK 已生成，尚未在真实NAS完成同步验收。
-本轮只验证独立测试账本的固定支出，不迁移现有折日数据，也不连接旧 WebDAV 数据。
+> 历史阶段记录：当前版本为 API 0.3.0，六类业务、个人账本确认及升级步骤见 [全业务同步](complete-business-sync.md)。旧镜像、dirty 包及旧验收范围不能作为本轮交付依据。
+
+2026-10-21：本地完整 Docker 验证和折日测试 APK 已生成；API 数据服务 0.2.0 更新包及配套 Compose 已重新构建，尚未部署到真实 NAS。
+本轮在隔离测试账本验证固定支出、物品与分类的离线及双向同步；不迁移现有折日数据，也不连接旧 WebDAV 数据。
 
 ## 交付文件
 
@@ -9,7 +11,7 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| fastapi-0.1.0.tar.gz | API与启动前迁移工具，后续业务更新主要替换它 |
+| fastapi-0.2.0.tar.gz | API与启动前迁移工具，后续业务更新主要替换它 |
 | postgresql-17.11.tar.gz | PostgreSQL 17.11；首次安装或数据库版本升级时导入 |
 | powersync-1.27.0.tar.gz | PowerSync 1.27.0；首次安装或同步服务版本升级时导入 |
 | docker-compose.yml | 三服务完整配置；内含随机密码及私钥，私下保存 |
@@ -17,19 +19,20 @@
 | metadata/validation.json | 从分包重新导入后的完整本地链路验证，DSM为严格TLS替身 |
 | README.md | 本文的随包副本 |
 
-fastapi-0.1.0中的0.1.0是本项目API服务版本；FastAPI框架依赖自身为0.148.0，两者独立。
+fastapi-0.2.0中的0.2.0是本项目API服务版本；FastAPI框架依赖自身为0.148.0，两者独立。
 后续升级后只保留当前交付记录对应的一套包，清理校验值匹配的旧版本包。
 
 每个tar.gz都是一个可独立导入的完整Docker镜像，不能当成三个文件分卷，也不需要先合并。
 同一镜像解压后与原包的镜像ID一致，配置中的密码、密钥和端口保留。
-本次仅调整Compose启动方式，不更换镜像或升级应用版本。API仍为
-`app-data-service:0.1.0-06f014f-dirty-20261020033655`，另两个标签为
+本次以服务端分支 `feature/multi-entity-sync` 的 revision `9b95241` 工作区源码构建 API 0.2.0；源码含未提交改动，镜像标签保留 `dirty`：
+`app-data-service:0.2.0-9b95241-dirty-20261021112414`。PostgreSQL 与 PowerSync 镜像标签保持
 `postgres:17.11-bookworm`、`journeyapps/powersync-service:1.27.0`。
-原始构建的dirty标记保留，release.json分别记录运行代码来源与重新打包来源。
+配套 Compose 已切换 API 镜像并内嵌当前 PowerSync 规则，其他部署凭据与连接设置沿用原配置。
+`metadata/release.json` 的 `updatedArchives` 仅列 `fastapi-0.2.0.tar.gz`，`realNasDeployed` 为 false。
 旧的一体TAR、reports和冗余交付目录已清理。包名使用英文组件名和软件版本；镜像架构、基础系统变体、完整构建标签及摘要记录在metadata中。
 在release根目录执行 `sha256sum -c metadata/checksums.sha256` 可核对三个文件。
 
-折日 APK 位于 `C:/Study/MyCode/MyProject/zheri/release/zheri-0.10.22+57.apk`。
+折日 APK 位于 `C:/Study/MyCode/MyProject/zheri/release/zheri-0.11.0+60.apk`。
 本次仅生成本地文件，没有上传到 WebDAV 或更新远程 OTA。
 
 ## 环境与部署
@@ -174,7 +177,7 @@ Windows 安装包和浏览器实际运行尚待后续验证，本轮不能据此
 ## 后续更新方式
 
 - 首次安装：导入三个分包，再用同目录Compose新建项目。
-- 只更新API业务：仍使用同一个release目录，传输fastapi-0.1.0.tar.gz、匹配Compose和必要说明即可。
+- 只更新API业务：仍使用同一个release目录，传输当前版本的 `fastapi-<API版本>.tar.gz`、匹配 Compose 和必要说明即可。
   本地保留未变化的PostgreSQL和PowerSync分包，不复制第二套目录；metadata/release.json的updatedArchives列出本次更新文件。
   NAS已有的两个依赖镜像标签须与记录一致，无需重复传输。
 - 导入新的API分包后，用配套Compose更新原项目并重建api，启动时自动执行迁移；

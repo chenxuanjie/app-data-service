@@ -13,7 +13,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from .auth import API_AUDIENCE, TokenAuthority
 from .dsm import DsmFailure, DsmProvider, VerifiedDsm
-from .models import AppSession
+from .models import AppSession, Dataset
 from .store import user_transaction
 
 REFRESH_AUDIENCE = "app-data-refresh"
@@ -42,8 +42,10 @@ class SessionManager:
         )
         with user_transaction(self.engine, actor) as c:
             dataset_id = c.scalar(
-                sa.text("SELECT core.ensure_test_account(:name)"), {"name": verified.display_name}
+                sa.text("SELECT core.ensure_personal_account(:name)"),
+                {"name": verified.display_name},
             )
+            dataset_kind = c.scalar(sa.select(Dataset.kind).where(Dataset.id == dataset_id))
             c.execute(
                 sa.insert(AppSession).values(
                     id=session_id,
@@ -59,6 +61,7 @@ class SessionManager:
             "user_id": actor,
             "display_name": verified.display_name,
             "dataset_id": dataset_id,
+            "dataset_kind": dataset_kind,
         }
 
     def session(self, actor: str, session_id, *, refresh: str | None = None) -> dict:

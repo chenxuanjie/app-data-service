@@ -101,18 +101,18 @@ def login(client, name="alice"):
     return response.json()
 
 
-def test_verified_uid_provisions_same_test_dataset_and_private_session(authenticated, db):
+def test_verified_uid_provisions_same_personal_dataset_and_private_session(authenticated, db):
     client, dsm, authority, manager = authenticated
     a, second, b = login(client), login(client), login(client, "bob")
     expected = hashlib.sha256(
         f"synology-direct-v1|https://old-dsm.test:5001|{dsm.seed}".encode()
     ).hexdigest()
-    assert a["user_id"] == expected and a["dataset_id"] == "test-" + expected
+    assert a["user_id"] == expected and a["dataset_id"] == "personal-" + expected
     assert a["dataset_id"] == second["dataset_id"] != b["dataset_id"]
     assert not {"sid", "synotoken", "password"} & a.keys()
     client.headers["Authorization"] = "Bearer " + a["access_token"]
     assert client.get("/v1/datasets").json() == {
-        "datasets": [{"id": a["dataset_id"], "name": "同步测试账本"}]
+        "datasets": [{"id": a["dataset_id"], "name": "个人账本", "kind": "personal"}]
     }
     assert client.post("/v1/sync/credentials").status_code == 200
     with user_transaction(db.runtime, expected) as c:
@@ -149,6 +149,27 @@ def test_refresh_verifies_upstream_and_logout_revokes_immediately(authenticated)
     client.headers["Authorization"] = "Bearer " + account["access_token"]
     assert client.get("/v1/datasets").status_code == 401
     assert client.post("/v1/auth/refresh", json=body).status_code == 401
+
+
+def test_existing_trial_login_and_promotion_keep_the_same_dataset(authenticated, db):
+    client, dsm, _, _ = authenticated
+    actor = hashlib.sha256(
+        f"synology-direct-v1|https://old-dsm.test:5001|{dsm.seed}".encode()
+    ).hexdigest()
+    with user_transaction(db.runtime, actor) as c:
+        dataset = c.scalar(sa.text("SELECT core.ensure_test_account('旧账号')"))
+    first = login(client)
+    assert first["dataset_id"] == dataset == "test-" + actor
+    assert first["dataset_kind"] == "trial"
+    client.headers["Authorization"] = "Bearer " + first["access_token"]
+    response = client.post(f"/v2/datasets/{dataset}/promote")
+    assert response.status_code == 200
+    assert response.json() == {"dataset_id": dataset, "dataset_kind": "personal"}
+    second = login(client)
+    assert second["dataset_id"] == dataset and second["dataset_kind"] == "personal"
+    assert client.get("/v1/datasets").json() == {
+        "datasets": [{"id": dataset, "name": "个人账本", "kind": "personal"}]
+    }
 
 
 @pytest.mark.parametrize(

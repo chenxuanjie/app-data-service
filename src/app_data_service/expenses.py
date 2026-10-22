@@ -107,3 +107,15 @@ class ExpenseImportPlan:
         ]
         payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return cls(records, hashlib.sha256(payload.encode("utf-8")).hexdigest())
+
+
+def legacy_record(record: ExpenseRecord) -> dict:
+    values = asdict(record)
+    values["amount"] = format(record.amount, "f")
+    for old, new in [
+        ("icon_id", "iconId"),
+        ("include_in_living_cost", "includeInLivingCost"),
+        ("sort_order", "sortOrder"),
+    ]:
+        values[new] = values.pop(old)
+    return values

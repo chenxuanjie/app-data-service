@@ -1,5 +1,8 @@
 # Flutter 应用数据服务
 
+源码版本 0.3.0，已补齐工资、资产配置、业务设置和个人账本确认，详见 [全业务接口与升级说明](docs/complete-business-sync.md)。
+折日六类业务统一采用 PostgreSQL + FastAPI + PowerSync，客户端保留 SQLite 离线副本；旧 WebDAV 业务同步已退役。
+
 已完成 PostgreSQL 基础、PowerSync + FastAPI 容器链路与折日独立同步测试入口。
 应用以离线使用为主，服务器负责同步；本项目不要求手机直接连接 PostgreSQL。
 
@@ -15,11 +18,11 @@
 
 已加入 DSM 登录、会话刷新/退出、单入口同步网关、三服务自包含 Compose 和镜像导入包。
 本地完整 Docker 验证使用严格 TLS DSM 替身；真实 DSM 和 NAS 部署仍待验收。
-当前没有：折日正式业务切换、生产数据迁移、备份、共享账本或管理后台。
+已实现显式迁入与原地确认个人账本，不自动操作真实账号或 NAS。当前没有备份、共享账本或管理后台。
 `seed-demo` 只创建本地测试身份，不代表通过了 DSM 登录验证。
 Git 按 [Git Flow](docs/git-flow.md) 开发：`main` / `develop` / `feature/*`。
 PostgreSQL 基础已在 `feature/postgres-foundation` 提交并合入 `develop`；
-当前工作分支为 `feature/powersync-sync`，尚未创建生产发布版本。
+当前工作分支为 `feature/multi-entity-sync`，尚未创建生产发布版本。
 
 ## 本地开发
 
@@ -152,7 +155,7 @@ PowerSync 实验使用静态公钥，避免容器访问宿主机的额外网络�
 
 `tools/render_stack.py` 生成完整测试配置，`tools/build_docker_bundle.py` 构建镜像、
 分别导出三个镜像为独立 tar.gz、逐包重新导入并运行 `tools/verify_stack.py`。只有验证通过才替换交付文件。
-交付集中在 `release/` 根目录，包名为 `fastapi-0.1.0.tar.gz`、`postgresql-17.11.tar.gz`、`powersync-1.27.0.tar.gz`，报告收在 `metadata/`，后续仅API更新使用 `--api-only`，无需重传未变化的数据库与同步镜像。
+交付集中在 `release/` 根目录，包名为 `fastapi-<API服务版本>.tar.gz`、`postgresql-17.11.tar.gz`、`powersync-1.27.0.tar.gz`，报告收在 `metadata/`，后续仅API更新使用 `--api-only`，无需重传未变化的数据库与同步镜像。
 验证器使用随机隔离的容器、卷、数据库及严格 TLS DSM 替身，不访问真实 NAS。
 API 镜像以 UID 10001 运行，构建上下文不含 `.local`、密钥或本地数据库。
 本次具体文件、重建方法和手动验收步骤见 [群晖测试部署与验收](docs/synology-test.md)。

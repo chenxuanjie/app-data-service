@@ -11,3 +11,48 @@ streams:
           SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
         )
       )
+  private_assets:
+    auto_subscribe: true
+    query: |
+      SELECT assets.* FROM zheri.assets
+      WHERE deleted_at IS NULL AND dataset_id IN (
+        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
+          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
+        )
+      )
+  private_expense_categories:
+    auto_subscribe: true
+    query: |
+      SELECT expense_categories.* FROM zheri.expense_categories
+      WHERE deleted_at IS NULL AND dataset_id IN (
+        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
+          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
+        )
+      )
+  private_payroll_records:
+    auto_subscribe: true
+    query: |
+      SELECT payroll_records.* FROM zheri.payroll_records
+      WHERE deleted_at IS NULL AND dataset_id IN (
+        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
+          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
+        )
+      )
+  private_asset_allocations:
+    auto_subscribe: true
+    query: |
+      SELECT asset_allocations.* FROM zheri.asset_allocations
+      WHERE deleted_at IS NULL AND dataset_id IN (
+        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
+          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
+        )
+      )
+  private_business_preferences:
+    auto_subscribe: true
+    query: |
+      SELECT business_preferences.* FROM zheri.business_preferences
+      WHERE deleted_at IS NULL AND dataset_id IN (
+        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
+          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
+        )
+      )

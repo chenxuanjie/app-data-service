@@ -1,6 +1,6 @@
 """Typed business records; PowerSync's internal tables are deliberately separate."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -37,6 +37,7 @@ class Dataset(Base):
     app_id: Mapped[str] = mapped_column(sa.ForeignKey("core.apps.id"))
     owner_id: Mapped[str] = mapped_column(sa.ForeignKey("core.users.id"))
     name: Mapped[str] = mapped_column(sa.Text)
+    kind: Mapped[str] = mapped_column(sa.Text, server_default="trial")
 
 
 class DatasetMember(Base):
@@ -76,11 +77,55 @@ class Expense(Base):
     name: Mapped[str] = mapped_column(sa.Text)
     amount: Mapped[Decimal] = mapped_column(sa.Numeric)
     cycle: Mapped[str] = mapped_column(sa.Text)
+    category_id: Mapped[str | None] = mapped_column(sa.Text)
     category: Mapped[str] = mapped_column(sa.Text)
     subcategory: Mapped[str] = mapped_column(sa.Text)
     icon_id: Mapped[str | None] = mapped_column(sa.Text)
     include_in_living_cost: Mapped[bool] = mapped_column(sa.Boolean, server_default=sa.true())
     note: Mapped[str] = mapped_column(sa.Text, server_default="")
+    sort_order: Mapped[int] = mapped_column(sa.BigInteger)
+    row_version: Mapped[int] = mapped_column(sa.BigInteger, server_default="1")
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+
+
+class Asset(Base):
+    __tablename__ = "assets"
+    __table_args__ = {"schema": "zheri"}
+
+    id: Mapped[str] = mapped_column(sa.Text, primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(sa.ForeignKey("core.datasets.id"))
+    name: Mapped[str] = mapped_column(sa.Text)
+    price: Mapped[Decimal] = mapped_column(sa.Numeric)
+    purchase_date: Mapped[date] = mapped_column(sa.Date)
+    category: Mapped[str] = mapped_column(sa.Text)
+    residual_value: Mapped[Decimal] = mapped_column(sa.Numeric)
+    target_daily_cost: Mapped[Decimal] = mapped_column(sa.Numeric)
+    icon_name: Mapped[str] = mapped_column(sa.Text)
+    color_value: Mapped[int] = mapped_column(sa.BigInteger)
+    include_in_living_cost: Mapped[bool] = mapped_column(sa.Boolean)
+    note: Mapped[str] = mapped_column(sa.Text)
+    sort_order: Mapped[int] = mapped_column(sa.BigInteger)
+    row_version: Mapped[int] = mapped_column(sa.BigInteger, server_default="1")
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+
+
+class ExpenseCategory(Base):
+    __tablename__ = "expense_categories"
+    __table_args__ = (
+        sa.UniqueConstraint("id", "dataset_id", name="uq_category_dataset"),
+        {"schema": "zheri"},
+    )
+
+    id: Mapped[str] = mapped_column(sa.Text, primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(sa.ForeignKey("core.datasets.id"))
+    name: Mapped[str] = mapped_column(sa.Text)
+    icon_id: Mapped[str] = mapped_column(sa.Text)
     sort_order: Mapped[int] = mapped_column(sa.BigInteger)
     row_version: Mapped[int] = mapped_column(sa.BigInteger, server_default="1")
     updated_at: Mapped[datetime] = mapped_column(
@@ -121,6 +166,26 @@ class ImportRecord(Base):
     target_id: Mapped[str] = mapped_column(sa.ForeignKey("zheri.expenses.id"))
 
 
+class SyncConflict(Base):
+    __tablename__ = "sync_conflicts"
+    __table_args__ = {"schema": "zheri"}
+
+    id: Mapped[UUID] = mapped_column(sa.Uuid, primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(sa.ForeignKey("core.datasets.id"))
+    user_id: Mapped[str] = mapped_column(sa.ForeignKey("core.users.id"))
+    entity_type: Mapped[str] = mapped_column(sa.Text)
+    record_id: Mapped[str] = mapped_column(sa.Text)
+    candidate: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    server_record: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    server_version: Mapped[int] = mapped_column(sa.BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    resolution: Mapped[str | None] = mapped_column(sa.Text)
+    resolved_version: Mapped[int | None] = mapped_column(sa.BigInteger)
+    resolved_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+
+
 class MutationReceipt(Base):
     __tablename__ = "mutation_receipts"
     __table_args__ = {"schema": "core"}
@@ -130,6 +195,7 @@ class MutationReceipt(Base):
     mutation_id: Mapped[UUID] = mapped_column(sa.Uuid, primary_key=True)
     dataset_id: Mapped[str] = mapped_column(sa.ForeignKey("core.datasets.id"))
     record_id: Mapped[str] = mapped_column(sa.Text)
+    entity_type: Mapped[str] = mapped_column(sa.Text, server_default="expenses")
     payload_hash: Mapped[str] = mapped_column(sa.Text)
     base_version: Mapped[int] = mapped_column(sa.BigInteger)
     result: Mapped[dict] = mapped_column(JSONB)
@@ -170,3 +236,31 @@ class AppSession(Base):
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now()
     )
+
+
+class BusinessDocumentMixin:
+    id: Mapped[str] = mapped_column(sa.Text, primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(sa.ForeignKey("core.datasets.id"))
+    name: Mapped[str] = mapped_column(sa.Text)
+    payload: Mapped[dict] = mapped_column(JSONB)
+    sort_order: Mapped[int] = mapped_column(sa.BigInteger)
+    row_version: Mapped[int] = mapped_column(sa.BigInteger, server_default="1")
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+
+
+class PayrollRecord(BusinessDocumentMixin, Base):
+    __tablename__ = "payroll_records"
+    __table_args__ = {"schema": "zheri"}
+
+
+class AssetAllocation(BusinessDocumentMixin, Base):
+    __tablename__ = "asset_allocations"
+    __table_args__ = {"schema": "zheri"}
+
+
+class BusinessPreference(BusinessDocumentMixin, Base):
+    __tablename__ = "business_preferences"
+    __table_args__ = {"schema": "zheri"}
