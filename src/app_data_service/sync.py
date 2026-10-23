@@ -2,45 +2,65 @@
 
 import hashlib
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import Connection
 
 from .entities import ENTITY_MODELS, EntityType, canonical_record, database_values
-from .expenses import ExpenseRecord, legacy_record
 from .models import Dataset, ExpenseConflict, MutationReceipt, SyncConflict
+from .record_merge import merge_record, row_record, same
 
 Identifier = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[^\x00]+$")]
 Version = Annotated[int, Field(strict=True, ge=0, le=9223372036854775806)]
+AUTOMATIC_PREFERENCES = {"allocation_baseline", "allocation_order"}
 
 
 class Mutation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mutation_id: UUID
+    entity_type: EntityType
     record_id: Identifier
     base_version: Version
     predecessor: UUID | None = None
     kind: Literal["put", "delete"]
     record: dict | None = None
+    base_record: dict | None = None
+    edited_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def validate_record(self):
         if self.kind == "put":
-            if not isinstance(self.record, dict) or not isinstance(self.record.get("amount"), str):
-                raise ValueError("Upload amounts must use decimal strings")
-            record = ExpenseRecord.from_legacy_json(self.record, position=0)
-            if record.id != self.record_id:
+            if not isinstance(self.record, dict):
+                raise ValueError("Put requires a record")
+            self.record = canonical_record(self.entity_type, self.record)
+            if self.record["id"] != self.record_id:
                 raise ValueError("Record identity mismatch")
-            # Canonical full snapshot: no rebasing against a newer server record.
-            self.record = legacy_record(record)
         elif self.record is not None:
-            raise ValueError("Delete must not include a replacement record")
+            raise ValueError("Delete must not include a record")
+        if self.base_record is not None:
+            self.base_record = canonical_record(self.entity_type, self.base_record)
+            if self.base_record["id"] != self.record_id:
+                raise ValueError("Base record identity mismatch")
+        if self.edited_at is not None:
+            if not self.automatic_preference:
+                raise ValueError("Edit time is only supported for automatic preferences")
+            if self.edited_at > datetime.now(UTC) + timedelta(minutes=5):
+                raise ValueError("Edit time is ahead of the server clock")
         return self
+
+    @property
+    def automatic_preference(self):
+        return (
+            self.entity_type == "business_preferences"
+            and self.kind == "put"
+            and self.record is not None
+            and self.record["name"] in AUTOMATIC_PREFERENCES
+        )
 
 
 class Upload(BaseModel):
@@ -57,41 +77,11 @@ class Upload(BaseModel):
         return values
 
 
-class MutationV2(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    mutation_id: UUID
-    entity_type: EntityType
-    record_id: Identifier
-    base_version: Version
-    predecessor: UUID | None = None
-    kind: Literal["put", "delete"]
-    record: dict | None = None
-
-    @model_validator(mode="after")
-    def validate_record(self):
-        if self.kind == "put":
-            if not isinstance(self.record, dict):
-                raise ValueError("Put requires a record")
-            self.record = canonical_record(self.entity_type, self.record)
-            if self.record["id"] != self.record_id:
-                raise ValueError("Record identity mismatch")
-        elif self.record is not None:
-            raise ValueError("Delete must not include a record")
-        return self
-
-
-class UploadV2(Upload):
-    mutations: list[MutationV2] = Field(min_length=1, max_length=100)
-
-
 class Resolution(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    entity_type: EntityType
     choice: Literal["server", "candidate"]
     expected_version: Version
-
-
-class ResolutionV2(Resolution):
-    entity_type: EntityType
 
 
 class ScopeError(Exception):
@@ -153,6 +143,7 @@ def save_candidate(
     current,
     *,
     entity_type: EntityType = "expenses",
+    edited_at: datetime | None = None,
 ) -> int:
     model = ENTITY_MODELS[entity_type]
     if candidate is None:
@@ -162,6 +153,8 @@ def save_candidate(
     else:
         values = database_values(entity_type, candidate, dataset_id)
         values["deleted_at"] = None
+        if entity_type == "business_preferences":
+            values["edited_at"] = edited_at
     if current is None:
         return connection.scalar(sa.insert(model).values(**values).returning(model.row_version))
     values.pop("id", None)
@@ -174,14 +167,18 @@ def save_candidate(
     )
 
 
-def apply_upload(connection: Connection, actor: str, upload: Upload | UploadV2) -> dict:
+def apply_upload(connection: Connection, actor: str, upload: Upload) -> dict:
     visible_dataset(connection, upload.dataset_id)
     lock_dataset(connection, upload.dataset_id)
     receipts = MutationReceipt.__table__
     results = []
     for mutation in upload.mutations:
-        entity_type = getattr(mutation, "entity_type", "expenses")
+        entity_type = mutation.entity_type
         payload = {"dataset_id": upload.dataset_id, **mutation.model_dump(mode="json")}
+        if mutation.edited_at is None:
+            payload.pop("edited_at")
+        if mutation.base_record is None:
+            payload.pop("base_record")
         digest = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -192,7 +189,17 @@ def apply_upload(connection: Connection, actor: str, upload: Upload | UploadV2) 
         ]
         previous = connection.execute(sa.select(receipts).where(*identity)).mappings().one_or_none()
         if previous:
-            if previous["payload_hash"] != digest:
+            accepted = {digest}
+            # Existing expense receipts predate the entity discriminator. Accept
+            # only the identical historical payload, retaining the durable ID.
+            if entity_type == "expenses" and previous["entity_type"] == "expenses":
+                historical = {key: value for key, value in payload.items() if key != "entity_type"}
+                accepted.add(
+                    hashlib.sha256(
+                        json.dumps(historical, sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest()
+                )
+            if previous["payload_hash"] not in accepted:
                 raise ReplayError("Mutation ID reused with different content")
             results.append(previous["result"])
             continue
@@ -223,15 +230,74 @@ def apply_upload(connection: Connection, actor: str, upload: Upload | UploadV2) 
                 and predecessor["base_version"] == mutation.base_version
             )
         result = {"mutation_id": str(mutation.mutation_id)}
-        if can_apply:
-            version = save_candidate(
-                connection,
-                upload.dataset_id,
-                mutation.record_id,
-                mutation.record,
-                current,
-                entity_type=entity_type,
+        stored = row_record(entity_type, current)
+        candidate = mutation.record
+        unchanged = same(candidate, stored)
+        if (
+            mutation.base_record is None
+            and not can_apply
+            and candidate is not None
+            and stored is not None
+            and same(
+                {k: v for k, v in candidate.items() if k != "sortOrder"},
+                {k: v for k, v in stored.items() if k != "sortOrder"},
             )
+        ):
+            candidate = stored
+            unchanged = True
+        if mutation.base_record is not None and not unchanged:
+            if stored is None:
+                # A concurrent deletion cannot be silently resurrected.
+                can_apply = False
+            elif candidate is None:
+                # Pure ordering is not a business edit that blocks deletion.
+                can_apply = same(
+                    {k: v for k, v in mutation.base_record.items() if k != "sortOrder"},
+                    {k: v for k, v in stored.items() if k != "sortOrder"},
+                )
+            else:
+                proposal, conflicting = merge_record(mutation.base_record, candidate, stored)
+                try:
+                    candidate = canonical_record(entity_type, proposal)
+                except ValueError:
+                    # Two individually valid edits may violate a cross-field constraint.
+                    conflicting = True
+                can_apply = not conflicting
+        if (
+            mutation.automatic_preference
+            and current is not None
+            and current["deleted_at"] is not None
+        ):
+            can_apply = False
+        if mutation.automatic_preference and (current is None or current["deleted_at"] is None):
+            # Compare the edit, not the arrival. A missing/equal time retains
+            # the current value; retries still use the normal durable receipt.
+            newer = (
+                current is None
+                or mutation.edited_at is not None
+                and (current["edited_at"] is None or mutation.edited_at > current["edited_at"])
+            )
+            if newer:
+                version = save_candidate(
+                    connection,
+                    upload.dataset_id,
+                    mutation.record_id,
+                    mutation.record,
+                    current,
+                    entity_type=entity_type,
+                    edited_at=mutation.edited_at,
+                )
+            result.update(status="applied", version=version)
+        elif unchanged or can_apply:
+            if not same(candidate, stored):
+                version = save_candidate(
+                    connection,
+                    upload.dataset_id,
+                    mutation.record_id,
+                    candidate,
+                    current,
+                    entity_type=entity_type,
+                )
             result.update(status="applied", version=version)
         else:
             conflict_id = uuid4()
@@ -242,7 +308,7 @@ def apply_upload(connection: Connection, actor: str, upload: Upload | UploadV2) 
                     dataset_id=upload.dataset_id,
                     user_id=actor,
                     record_id=mutation.record_id,
-                    candidate=mutation.record,
+                    candidate=candidate,
                     server_record=snapshot(current),
                     server_version=version,
                 )
@@ -292,11 +358,20 @@ def resolve_conflict(
     if version != resolution.expected_version:
         raise ReplayError("Record changed again; review the current version")
     if resolution.choice == "candidate":
+        candidate = row["candidate"]
+        baseline = row_record(entity_type, row["server_record"])
+        latest = row_record(entity_type, current)
+        if candidate is not None and baseline is not None and latest is not None:
+            proposal, _ = merge_record(baseline, candidate, latest)
+            try:
+                candidate = canonical_record(entity_type, proposal)
+            except ValueError as error:
+                raise ReplayError("Merged resolution is no longer valid; review again") from error
         version = save_candidate(
             connection,
             row["dataset_id"],
             row["record_id"],
-            row["candidate"],
+            candidate,
             current,
             entity_type=entity_type,
         )

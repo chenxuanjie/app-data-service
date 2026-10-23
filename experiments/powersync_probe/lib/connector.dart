@@ -75,12 +75,10 @@ class ProbeConnector extends PowerSyncBackendConnector {
       if (metadata['record_id'] != entry.id) {
         throw StateError('Queued mutation identity mismatch');
       }
-      mutations.add(metadata);
+      mutations.add({...metadata, 'entity_type': entry.table});
     }
     final result = await request(
-      mutations.first.containsKey('entity_type')
-          ? '/v2/sync/upload'
-          : '/v1/sync/upload',
+      '/v2/sync/upload',
       body: {
         'dataset_id': datasetId,
         'client_id': await database.getClientId(),
@@ -128,6 +126,7 @@ Future<void> saveExpense(
     );
     final mutationId = const Uuid().v4();
     final metadata = jsonEncode({
+      'entity_type': 'expenses',
       'mutation_id': mutationId,
       'record_id': id,
       'base_version': base,

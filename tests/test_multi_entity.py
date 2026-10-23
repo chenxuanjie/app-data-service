@@ -74,13 +74,13 @@ def mutation(entity, *, version=0, predecessor=None, kind="put", **changes):
     }
 
 
-def upload(client, *mutations, client_id=None, dataset="alice-data", protocol=2):
+def upload(client, *mutations, client_id=None, dataset="alice-data"):
     body = {
         "dataset_id": dataset,
         "client_id": client_id or str(uuid4()),
         "mutations": list(mutations),
     }
-    return client.post(f"/v{protocol}/sync/upload", json=body)
+    return client.post("/v2/sync/upload", json=body)
 
 
 def test_mixed_upload_exact_money_date_color_and_category_reference(client, db):
@@ -100,7 +100,7 @@ def test_mixed_upload_exact_money_date_color_and_category_reference(client, db):
             == category["record_id"]
         )
     assert client.get("/v1/capabilities").json() == {
-        "sync_protocols": [1, 2],
+        "sync_protocols": [2],
         "entities": [
             "expenses",
             "assets",
@@ -110,7 +110,11 @@ def test_mixed_upload_exact_money_date_color_and_category_reference(client, db):
             "business_preferences",
         ],
         "max_mutations": 100,
-        "dataset_promotion": True,
+        "record_merge": "three_way_v1",
+        "automatic_preferences": {
+            "allocation_baseline": "latest_edit",
+            "allocation_order": "latest_edit",
+        },
     }
 
 
@@ -145,16 +149,18 @@ def test_new_entities_conflict_keep_both_versions_and_resolve(client, db, entity
 def test_receipts_do_not_replay_across_entities_or_chain_wrong_predecessors(client):
     first = mutation("expenses")
     client_id = str(uuid4())
-    legacy = {key: value for key, value in first.items() if key != "entity_type"}
-    original = upload(client, legacy, client_id=client_id, protocol=1)
+    legacy = first
+    original = upload(client, legacy, client_id=client_id)
     assert original.status_code == 200
-    assert upload(client, legacy, client_id=client_id, protocol=1).json() == original.json()
+    assert upload(client, legacy, client_id=client_id).json() == original.json()
     asset = mutation("assets", id=first["record_id"])
     asset["mutation_id"] = first["mutation_id"]
     assert upload(client, asset, client_id=client_id).status_code == 409
     asset["mutation_id"] = str(uuid4())
     assert upload(client, asset, client_id=client_id).status_code == 200
-    wrong = mutation("assets", id=first["record_id"], predecessor=first["mutation_id"])
+    wrong = mutation(
+        "assets", id=first["record_id"], predecessor=first["mutation_id"], name="changed"
+    )
     assert upload(client, wrong, client_id=client_id).json()["results"][0]["status"] == "conflict"
 
 
@@ -225,15 +231,15 @@ def test_soft_deleted_category_preserves_expense_snapshot_and_legacy_conflicts(c
     deleted = mutation("expense_categories", id=category["record_id"], version=1, kind="delete")
     assert upload(client, deleted).status_code == 200
     legacy = mutation("expenses", id=expense["record_id"], name="旧客户端候选")
-    legacy.pop("entity_type")
-    conflict = upload(client, legacy, protocol=1).json()["results"][0]
+    conflict = upload(client, legacy).json()["results"][0]
     rows = client.get("/v2/conflicts", params={"dataset_id": "alice-data"}).json()["conflicts"]
     row = next(row for row in rows if row["id"] == conflict["conflict_id"])
     assert row["entity_type"] == "expenses"
     assert row["current_record"]["category"] == "自定义分类"
     assert (
         client.post(
-            f"/v1/conflicts/{row['id']}/resolve", json={"choice": "server", "expected_version": 1}
+            f"/v2/conflicts/{row['id']}/resolve",
+            json={"entity_type": "expenses", "choice": "server", "expected_version": 1},
         ).status_code
         == 200
     )

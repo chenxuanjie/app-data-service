@@ -4,6 +4,7 @@ import hashlib
 import json
 from uuid import uuid4
 
+import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
@@ -14,7 +15,7 @@ from app_data_service.config import make_engine
 from app_data_service.expenses import ExpenseRecord
 from app_data_service.models import Expense
 from app_data_service.store import user_transaction
-from app_data_service.sync import Upload, apply_upload
+from app_data_service.sync import ReplayError, Upload, apply_upload
 
 
 def test_upgrade_preserves_v1_receipts_records_and_unresolved_conflicts(db, monkeypatch):
@@ -52,6 +53,7 @@ def test_upgrade_preserves_v1_receipts_records_and_unresolved_conflicts(db, monk
                 "client_id": str(uuid4()),
                 "mutations": [
                     {
+                        "entity_type": "expenses",
                         "mutation_id": str(uuid4()),
                         "record_id": "legacy-id",
                         "base_version": 0,
@@ -64,6 +66,9 @@ def test_upgrade_preserves_v1_receipts_records_and_unresolved_conflicts(db, monk
         )
         mutation = upload.mutations[0]
         payload = {"dataset_id": upload.dataset_id, **mutation.model_dump(mode="json")}
+        payload.pop("entity_type")
+        payload.pop("edited_at")  # This field did not exist in the v1 receipt.
+        payload.pop("base_record")
         digest = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -109,6 +114,18 @@ def test_upgrade_preserves_v1_receipts_records_and_unresolved_conflicts(db, monk
                 sa.text("SELECT payload_hash,entity_type FROM core.mutation_receipts")
             ).one()
             assert tuple(receipt) == (digest, "expenses")
+            assert (
+                c.scalar(sa.text("SELECT to_regprocedure('core.promote_personal_dataset(text)')"))
+                is None
+            )
+            assert (
+                c.scalar(sa.text("SELECT to_regprocedure('core.ensure_test_account(text)')"))
+                is None
+            )
+            assert c.execute(sa.text("SELECT id,kind FROM core.datasets")).one() == (
+                "legacy-data",
+                "personal",
+            )
             assert c.scalar(sa.select(Expense.row_version).where(Expense.id == "legacy-id")) == 1
             assert (
                 c.scalar(
@@ -117,6 +134,10 @@ def test_upgrade_preserves_v1_receipts_records_and_unresolved_conflicts(db, monk
                 )
                 is True
             )
+        changed = upload.model_copy(deep=True)
+        changed.mutations[0].record["name"] = "不同内容"
+        with pytest.raises(ReplayError), user_transaction(runtime, "legacy-user") as c:
+            apply_upload(c, "legacy-user", changed)
     finally:
         for engine in engines:
             engine.dispose()

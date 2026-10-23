@@ -40,6 +40,7 @@ def api(db, authority):
 def mutation(record_id=None, *, version=0, predecessor=None, kind="put", **changes):
     record_id = record_id or f"api-{uuid4()}"
     return {
+        "entity_type": "expenses",
         "mutation_id": str(uuid4()),
         "record_id": record_id,
         "base_version": version,
@@ -68,7 +69,7 @@ def upload(*mutations, client_id=None, dataset="alice-data"):
 
 
 def post(api, body):
-    response = api.post("/v1/sync/upload", json=body)
+    response = api.post("/v2/sync/upload", json=body)
     assert response.status_code == 200, response.text
     return response.json()["results"]
 
@@ -77,7 +78,7 @@ def test_authentication_and_distinct_audiences(api, authority):
     assert api.get("/.well-known/jwks.json").json() == {"keys": [authority.jwk]}
     assert not {"d", "p", "q"} & authority.jwk.keys()
     assert api.get("/v1/datasets").json()["datasets"] == [
-        {"id": "alice-data", "name": "甲", "kind": "trial"}
+        {"id": "alice-data", "name": "甲", "kind": "personal"}
     ]
     credentials = api.post("/v1/sync/credentials").json()
     claims = jwt.decode(
@@ -92,7 +93,7 @@ def test_authentication_and_distinct_audiences(api, authority):
     api.headers["Authorization"] = "Bearer " + credentials["token"]
     assert api.get("/v1/datasets").status_code == 401
     api.headers.pop("Authorization")
-    assert api.post("/v1/sync/upload", json=upload(mutation())).status_code == 401
+    assert api.post("/v2/sync/upload", json=upload(mutation())).status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -161,7 +162,7 @@ def test_upload_retry_is_durable_and_reused_id_rejected(api, db):
     assert post(api, body) == first  # The first committed response may have been lost.
     changed = deepcopy(body)
     changed["mutations"][0]["record"]["name"] = "重放篡改"
-    assert api.post("/v1/sync/upload", json=changed).status_code == 409
+    assert api.post("/v2/sync/upload", json=changed).status_code == 409
     with user_transaction(db.runtime, "alice") as c:
         row = (
             c.execute(sa.select(Expense).where(Expense.id == body["mutations"][0]["record_id"]))
@@ -203,23 +204,35 @@ def test_concurrent_writers_keep_both_versions_and_resolve(api, db):
         results = list(pool.map(lambda body: post(api, body)[0], bodies))
     assert sorted(r["status"] for r in results) == ["applied", "conflict"]
     conflict_id = next(r["conflict_id"] for r in results if r["status"] == "conflict")
-    conflicts = api.get("/v1/conflicts", params={"dataset_id": "alice-data"}).json()["conflicts"]
+    conflicts = api.get("/v2/conflicts", params={"dataset_id": "alice-data"}).json()["conflicts"]
     conflict = next(c for c in conflicts if c["id"] == conflict_id)
     assert {conflict["candidate"]["name"], conflict["server_record"]["name"]} == {
         "甲修改",
         "乙修改",
     }
-    endpoint = f"/v1/conflicts/{conflict_id}/resolve"
+    endpoint = f"/v2/conflicts/{conflict_id}/resolve"
     assert (
-        api.post(endpoint, json={"choice": "candidate", "expected_version": 1}).status_code == 409
+        api.post(
+            endpoint, json={"entity_type": "expenses", "choice": "candidate", "expected_version": 1}
+        ).status_code
+        == 409
     )
-    resolved = api.post(endpoint, json={"choice": "candidate", "expected_version": 2})
+    resolved = api.post(
+        endpoint, json={"entity_type": "expenses", "choice": "candidate", "expected_version": 2}
+    )
     assert resolved.json() == {"status": "resolved", "version": 3}
     assert (
-        api.post(endpoint, json={"choice": "candidate", "expected_version": 2}).json()
+        api.post(
+            endpoint, json={"entity_type": "expenses", "choice": "candidate", "expected_version": 2}
+        ).json()
         == resolved.json()
     )
-    assert api.post(endpoint, json={"choice": "server", "expected_version": 3}).status_code == 409
+    assert (
+        api.post(
+            endpoint, json={"entity_type": "expenses", "choice": "server", "expected_version": 3}
+        ).status_code
+        == 409
+    )
     with user_transaction(db.runtime, "alice") as c:
         assert (
             c.scalar(sa.select(Expense.name).where(Expense.id == first["record_id"]))
@@ -235,7 +248,7 @@ def test_rejected_batch_rolls_back_all_changes_and_receipts(api, db):
     changed = deepcopy(existing)
     changed["record"]["name"] = "错误重放"
     body = upload(valid, changed, client_id=existing_body["client_id"])
-    assert api.post("/v1/sync/upload", json=body).status_code == 409
+    assert api.post("/v2/sync/upload", json=body).status_code == 409
     with user_transaction(db.runtime, "alice") as c:
         assert c.scalar(sa.select(Expense.id).where(Expense.id == valid["record_id"])) is None
         assert (
@@ -250,21 +263,21 @@ def test_rejected_batch_rolls_back_all_changes_and_receipts(api, db):
 
 def test_account_and_app_isolation_at_api_and_rls(api, db, authority):
     assert (
-        api.post("/v1/sync/upload", json=upload(mutation(), dataset="bob-data")).status_code == 404
+        api.post("/v2/sync/upload", json=upload(mutation(), dataset="bob-data")).status_code == 404
     )
     assert (
-        api.post("/v1/sync/upload", json=upload(mutation(), dataset="other-data")).status_code
+        api.post("/v2/sync/upload", json=upload(mutation(), dataset="other-data")).status_code
         == 404
     )
     initial = mutation()
     post(api, upload(initial))
-    conflict_id = post(api, upload(mutation(initial["record_id"])))[0]["conflict_id"]
+    conflict_id = post(api, upload(mutation(initial["record_id"], amount="60")))[0]["conflict_id"]
     api.headers["Authorization"] = "Bearer " + authority.issue("bob", API_AUDIENCE)
-    assert api.get("/v1/conflicts", params={"dataset_id": "alice-data"}).json() == {"conflicts": []}
+    assert api.get("/v2/conflicts", params={"dataset_id": "alice-data"}).json() == {"conflicts": []}
     assert (
         api.post(
-            f"/v1/conflicts/{conflict_id}/resolve",
-            json={"choice": "candidate", "expected_version": 1},
+            f"/v2/conflicts/{conflict_id}/resolve",
+            json={"entity_type": "expenses", "choice": "candidate", "expected_version": 1},
         ).status_code
         == 404
     )
@@ -292,10 +305,10 @@ def test_account_and_app_isolation_at_api_and_rls(api, db, authority):
 )
 def test_invalid_values_never_enter_upload_queue_server(api, field, value):
     body = upload(mutation(**{field: value}))
-    assert api.post("/v1/sync/upload", json=body).status_code == 422
+    assert api.post("/v2/sync/upload", json=body).status_code == 422
 
 
 def test_body_limit_and_unknown_identity(api, authority):
-    assert api.post("/v1/sync/upload", content=b"x" * (512 * 1024 + 1)).status_code == 413
+    assert api.post("/v2/sync/upload", content=b"x" * (512 * 1024 + 1)).status_code == 413
     api.headers["Authorization"] = "Bearer " + authority.issue("unknown", API_AUDIENCE)
     assert api.post("/v1/sync/credentials").status_code == 404

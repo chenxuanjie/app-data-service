@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -10,7 +11,7 @@ from test_multi_entity import upload
 from app_data_service.auth import API_AUDIENCE
 from app_data_service.business_documents import validate_document
 from app_data_service.entities import ENTITY_MODELS, database_values
-from app_data_service.models import Dataset, DatasetMember, User
+from app_data_service.models import BusinessPreference, Dataset, DatasetMember, SyncConflict, User
 from app_data_service.store import user_transaction
 
 
@@ -98,6 +99,8 @@ def test_complete_entities_roundtrip_conflict_resolution_delete_and_isolation(
 ):
     client, actor, dataset = workspace
     value = sample(entity)
+    if entity == "business_preferences":
+        value.update(name="include_asset_costs", payload=True)
     first = mutation(entity, value)
     assert upload(client, first, dataset=dataset).status_code == 200
     assert (
@@ -115,7 +118,7 @@ def test_complete_entities_roundtrip_conflict_resolution_delete_and_isolation(
         assert row["row_version"] == 1
     changed = deepcopy(value)
     changed["payload"] = (
-        "200"
+        False
         if entity == "business_preferences"
         else {
             **value["payload"],
@@ -180,26 +183,15 @@ def test_reject_invalid_documents_in_api_and_direct_postgres(workspace, db, enti
             )
 
 
-def test_in_place_promotion_preserves_ids_versions_receipts_and_rejects_other_accounts(
-    workspace, db
-):
+def test_personal_dataset_replay_and_cross_account_isolation(workspace, db):
     client, actor, dataset = workspace
-    value = sample("payroll_records")
-    msg = mutation("payroll_records", value)
+    msg = mutation("payroll_records", sample("payroll_records"))
     client_id = str(uuid4())
     response = upload(client, msg, dataset=dataset, client_id=client_id).json()
-    assert client.post(f"/v2/datasets/{dataset}/promote", json={}).json() == {
-        "dataset_id": dataset,
-        "dataset_kind": "personal",
-    }
-    assert client.post(f"/v2/datasets/{dataset}/promote", json={}).status_code == 200
     assert upload(client, msg, dataset=dataset, client_id=client_id).json() == response
-    assert client.get("/v1/datasets").json()["datasets"] == [
-        {"id": dataset, "name": "个人账本", "kind": "personal"}
-    ]
+    assert client.get("/v1/datasets").json()["datasets"][0]["kind"] == "personal"
     client.headers["Authorization"] = "Bearer " + client.authority.issue("bob", API_AUDIENCE)
-    assert client.post(f"/v2/datasets/{dataset}/promote", json={}).status_code == 404
-    assert client.post("/v2/datasets/other-data/promote", json={}).status_code == 404
+    assert upload(client, msg, dataset=dataset, client_id=client_id).status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -230,3 +222,78 @@ def test_recursive_contract_rejects_invalid_values_in_python_and_postgres(db, ki
             )
             is False
         )
+
+
+@pytest.mark.parametrize("name", ["allocation_baseline", "allocation_order"])
+@pytest.mark.parametrize("newest_first", [False, True])
+def test_automatic_preference_uses_edit_time_not_upload_order(workspace, db, name, newest_first):
+    client, actor, dataset = workspace
+    identifier = str(uuid4())
+    now = datetime.now(UTC)
+
+    def msg(payload, edited):
+        value = {"id": identifier, "name": name, "payload": payload, "sortOrder": 0}
+        return {**mutation("business_preferences", value), "edited_at": edited.isoformat()}
+
+    old_value = "100" if name == "allocation_baseline" else ["a", "b"]
+    new_value = "30000" if name == "allocation_baseline" else ["b", "a", "c"]
+    old = msg(old_value, now - timedelta(hours=2))
+    new = msg(new_value, now - timedelta(hours=1))
+    first, second = (new, old) if newest_first else (old, new)
+    assert upload(client, first, dataset=dataset).json()["results"][0]["status"] == "applied"
+    client_id = str(uuid4())
+    response = upload(client, second, dataset=dataset, client_id=client_id)
+    assert response.status_code == 200
+    assert response.json()["results"][0]["status"] == "applied"
+    assert upload(client, second, dataset=dataset, client_id=client_id).json() == response.json()
+    with user_transaction(db.runtime, actor) as c:
+        row = (
+            c.execute(sa.select(BusinessPreference).where(BusinessPreference.id == identifier))
+            .mappings()
+            .one()
+        )
+        assert row["payload"] == new_value
+        assert row["edited_at"] == now - timedelta(hours=1)
+        assert (
+            c.scalar(
+                sa.select(sa.func.count())
+                .select_from(SyncConflict)
+                .where(SyncConflict.record_id == identifier)
+            )
+            == 0
+        )
+
+
+def test_unknown_and_equal_preference_times_keep_current_value(workspace, db):
+    client, actor, dataset = workspace
+    value = sample("business_preferences")
+    first = mutation("business_preferences", value)
+    timestamp = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    first["edited_at"] = timestamp
+    assert upload(client, first, dataset=dataset).status_code == 200
+    changed = {**value, "payload": "0"}
+    for edited in [None, timestamp]:
+        candidate = mutation("business_preferences", changed, version=1)
+        if edited is not None:
+            candidate["edited_at"] = edited
+        assert (
+            upload(client, candidate, dataset=dataset).json()["results"][0]["status"] == "applied"
+        )
+    with user_transaction(db.runtime, actor) as c:
+        row = (
+            c.execute(sa.select(BusinessPreference).where(BusinessPreference.id == value["id"]))
+            .mappings()
+            .one()
+        )
+        assert row["payload"] == value["payload"]
+        assert row["row_version"] == 1
+
+
+def test_preference_edit_time_rejects_clock_errors_and_cross_account_upload(workspace, db):
+    client, actor, dataset = workspace
+    message = mutation("business_preferences", sample("business_preferences"))
+    for edited in ["2026-10-23T12:00:00", (datetime.now(UTC) + timedelta(days=1)).isoformat()]:
+        assert upload(client, {**message, "edited_at": edited}, dataset=dataset).status_code == 422
+    message["edited_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    client.headers["Authorization"] = "Bearer " + client.authority.issue("bob", API_AUDIENCE)
+    assert upload(client, message, dataset=dataset).status_code == 404

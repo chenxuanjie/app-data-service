@@ -35,7 +35,7 @@ def sqlstate(error):
 def test_real_postgres_migration_and_publication(db):
     report = inspect_database(db.urls["migrator"])
     assert report["postgres"].startswith("17.")
-    assert report["revision"] == "0007_browser_sessions"
+    assert report["revision"] == "0009_preference_edit_time"
     assert report["wal_level"] == "logical"
     assert report["publication"] == [
         "core.dataset_members",

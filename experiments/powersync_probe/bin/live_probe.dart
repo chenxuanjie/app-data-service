@@ -116,7 +116,7 @@ Future<void> main(List<String> args) async {
       'conflict retained',
     );
     final response = await cb.request(
-      '/v1/conflicts?dataset_id=${Uri.encodeQueryComponent(aliceDataset)}',
+      '/v2/conflicts?dataset_id=${Uri.encodeQueryComponent(aliceDataset)}',
       get: true,
     );
     final conflicts = response['conflicts'] as List;
@@ -125,8 +125,12 @@ Future<void> main(List<String> args) async {
     check(conflict['candidate']['name'] == '设备乙版本', 'Candidate lost');
     check(conflict['server_record']['name'] == '设备甲版本', 'Server version lost');
     await cb.request(
-      '/v1/conflicts/${conflict['id']}/resolve',
-      body: {'choice': 'candidate', 'expected_version': 3},
+      '/v2/conflicts/${conflict['id']}/resolve',
+      body: {
+        'entity_type': 'expenses',
+        'choice': 'candidate',
+        'expected_version': 3,
+      },
     );
     await until(() async => (await row(a))?['row_version'] == 4, 'resolved A');
     await until(() async => (await row(b))?['row_version'] == 4, 'resolved B');
@@ -437,15 +441,6 @@ Future<void> main(List<String> args) async {
       checks.add(
         'full_business_payroll_allocation_preference_conflicts_resolve_and_replicate',
       );
-      final promoted = await ca.request(
-        '/v2/datasets/$aliceDataset/promote',
-        body: {},
-      );
-      check(
-        promoted['dataset_id'] == aliceDataset &&
-            promoted['dataset_kind'] == 'personal',
-        'Promotion changed identity',
-      );
       await b.disconnect();
       for (final entity in tables)
         await saveBusiness(
@@ -462,12 +457,10 @@ Future<void> main(List<String> args) async {
           () async =>
               await docRow(a, entity) == null &&
               await docRow(b, entity) == null,
-          '$entity deleted after promotion',
+          '$entity deleted in personal ledger',
         );
       }
-      checks.add(
-        'full_business_personal_promotion_preserves_queue_and_delete_converges',
-      );
+      checks.add('full_business_preserves_queue_and_delete_converges');
     }
     stdout.writeln(
       jsonEncode({'passed': checks, 'platform': Platform.operatingSystem}),

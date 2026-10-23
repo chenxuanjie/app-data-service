@@ -37,7 +37,7 @@ class Dataset(Base):
     app_id: Mapped[str] = mapped_column(sa.ForeignKey("core.apps.id"))
     owner_id: Mapped[str] = mapped_column(sa.ForeignKey("core.users.id"))
     name: Mapped[str] = mapped_column(sa.Text)
-    kind: Mapped[str] = mapped_column(sa.Text, server_default="trial")
+    kind: Mapped[str] = mapped_column(sa.Text, server_default="personal")
 
 
 class DatasetMember(Base):
@@ -264,3 +264,5 @@ class AssetAllocation(BusinessDocumentMixin, Base):
 class BusinessPreference(BusinessDocumentMixin, Base):
     __tablename__ = "business_preferences"
     __table_args__ = {"schema": "zheri"}
+
+    edited_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))

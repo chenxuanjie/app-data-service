@@ -1,3 +1,5 @@
+> 当前 API 0.5.0：六类业务统一 `/v2/sync/upload` 与 `/v2/conflicts`；能力协议仅 [2]。迁移 0008 保留 ID 和队列并收敛个人账本状态；已移除转正接口。最新契约见[当前同步说明](current-sync.md)。下文为阶段实现记录，旧接口不再提供。
+
 # 最小同步 API
 
 > 历史阶段记录：当前版本为 API 0.3.0，六类业务、个人账本确认及升级步骤见 [全业务同步](complete-business-sync.md)。旧镜像、dirty 包及旧验收范围不能作为本轮交付依据。
@@ -59,6 +61,9 @@ DSM 会话签发的应用访问令牌有效期 15 分钟，刷新令牌 30 天�
 完整测试栈只发布 API 端口 18280，数据库和 PowerSync 不直接对宿主机开放。
 
 ## 上传与冲突
+
+下列是首版版本校验机制的阶段记录。当前六类业务已增加编辑前 `base_record` 的三方字段比较，
+相同内容与重复删除不冲突，详见 [字段级冲突处理](field-merge.md)；没有基线的修改仍保守处理。
 
 上传体包括 dataset_id、稳定的 PowerSync client_id、mutations。
 每项包含 mutation_id UUID、record_id、base_version、可空 predecessor、kind 及 record。

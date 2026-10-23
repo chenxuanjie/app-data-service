@@ -1,6 +1,11 @@
 # 验证状态
 
-> 下文保留早期阶段记录。已验收业务版本为 API 0.3.0，见 [全业务同步](complete-business-sync.md)。当前功能分支源码为 0.4.0，新增[账号文件与更新](account-files.md)，尚未打包或部署 NAS。
+> 下文保留早期阶段记录。已验收业务版本为 API 0.3.0，见 [全业务同步](complete-business-sync.md)。当前功能分支源码为 0.5.0，统一业务协议，见[当前同步契约](current-sync.md)，尚未打包或部署 NAS。
+
+2026-10-22 残留清理：ruff check / format --check、完整 193 项真实 PostgreSQL 测试、
+独立 Dart + API + PowerSync + PostgreSQL 的 11 项链路检查通过。迁移至 0008；旧数据身份、历史回执和队列保留。
+折日 192 项测试、Web Release，新 UI 公共包 11 项测试，以及浏览器 IndexedDB/OPFS 持久化检查通过。
+本轮无 NAS 部署或 APK/Docker 交付；下文为历史记录。
 
 2026-10-22 第二阶段本地验证：ruff check、ruff format --check 和完整 174 项 pytest 全部通过，
 数据库使用独立随机测试库中的真实 PostgreSQL，没有跳过数据库测试。DSM 使用 HTTPX 替身，

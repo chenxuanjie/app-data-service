@@ -151,20 +151,30 @@ def test_refresh_verifies_upstream_and_logout_revokes_immediately(authenticated)
     assert client.post("/v1/auth/refresh", json=body).status_code == 401
 
 
-def test_existing_trial_login_and_promotion_keep_the_same_dataset(authenticated, db):
+def test_existing_trial_login_finishes_state_without_changing_dataset(authenticated, db):
     client, dsm, _, _ = authenticated
     actor = hashlib.sha256(
         f"synology-direct-v1|https://old-dsm.test:5001|{dsm.seed}".encode()
     ).hexdigest()
-    with user_transaction(db.runtime, actor) as c:
-        dataset = c.scalar(sa.text("SELECT core.ensure_test_account('旧账号')"))
+    dataset = "test-" + actor
+    with db.migrator.begin() as c:
+        c.execute(
+            sa.text("INSERT INTO core.users(id,display_name) VALUES(:actor,'旧账号')"),
+            {"actor": actor},
+        )
+        c.execute(
+            sa.text("""INSERT INTO core.datasets(id,app_id,owner_id,name,kind)
+            VALUES(:id,'zheri',:actor,'旧账号','trial')"""),
+            {"id": dataset, "actor": actor},
+        )
+        c.execute(
+            sa.text("INSERT INTO core.dataset_members(dataset_id,user_id) VALUES(:id,:actor)"),
+            {"id": dataset, "actor": actor},
+        )
     first = login(client)
     assert first["dataset_id"] == dataset == "test-" + actor
-    assert first["dataset_kind"] == "trial"
+    assert first["dataset_kind"] == "personal"
     client.headers["Authorization"] = "Bearer " + first["access_token"]
-    response = client.post(f"/v2/datasets/{dataset}/promote")
-    assert response.status_code == 200
-    assert response.json() == {"dataset_id": dataset, "dataset_kind": "personal"}
     second = login(client)
     assert second["dataset_id"] == dataset and second["dataset_kind"] == "personal"
     assert client.get("/v1/datasets").json() == {
@@ -204,7 +214,7 @@ def test_unsafe_discovery_rejected_before_password_is_sent(authenticated):
 def test_account_creation_function_requires_valid_context_and_no_direct_grants(db):
     with pytest.raises(DBAPIError):
         with db.runtime.begin() as c:
-            c.exec_driver_sql("SELECT core.ensure_test_account('invalid')")
+            c.exec_driver_sql("SELECT core.ensure_personal_account('invalid')")
     with pytest.raises(DBAPIError):
         with user_transaction(db.runtime, "alice") as c:
             c.execute(sa.insert(User).values(id="illegal", display_name="illegal"))

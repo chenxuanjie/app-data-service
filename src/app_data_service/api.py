@@ -38,10 +38,8 @@ from .store import user_transaction
 from .sync import (
     ReplayError,
     Resolution,
-    ResolutionV2,
     ScopeError,
     Upload,
-    UploadV2,
     apply_upload,
     current_record,
     resolve_conflict,
@@ -114,7 +112,7 @@ def create_app(
         if dispose_engine:
             engine.dispose()
 
-    app = FastAPI(title="App Data Service", version="0.4.0", lifespan=lifespan)
+    app = FastAPI(title="App Data Service", version="0.5.0", lifespan=lifespan)
     app.add_middleware(BoundedBody)
     if allowed_origins:
         app.add_middleware(
@@ -428,29 +426,18 @@ def create_app(
     @app.get("/v1/capabilities")
     def capabilities(actor: Actor):
         return {
-            "sync_protocols": [1, 2],
+            "sync_protocols": [2],
             "entities": list(ENTITY_MODELS),
             "max_mutations": 100,
-            "dataset_promotion": True,
+            "record_merge": "three_way_v1",
+            "automatic_preferences": {
+                "allocation_baseline": "latest_edit",
+                "allocation_order": "latest_edit",
+            },
         }
 
-    @app.post("/v2/datasets/{dataset_id}/promote")
-    def promote_dataset(dataset_id: str, actor: Actor):
-        with user_transaction(engine, actor) as connection:
-            owner = connection.scalar(
-                sa.select(Dataset.id).where(
-                    Dataset.id == dataset_id, Dataset.owner_id == actor, Dataset.app_id == "zheri"
-                )
-            )
-            if owner is None:
-                raise ScopeError("Dataset unavailable")
-            result = connection.scalar(
-                sa.text("SELECT core.promote_personal_dataset(:id)"), {"id": dataset_id}
-            )
-        return {"dataset_id": result, "dataset_kind": "personal"}
-
     @app.post("/v2/sync/upload")
-    def upload_v2(body: UploadV2, actor: Actor):
+    def upload_v2(body: Upload, actor: Actor):
         with user_transaction(engine, actor) as connection:
             result = apply_upload(connection, actor, body)
         return result
@@ -490,48 +477,9 @@ def create_app(
         return {"conflicts": result[:100]}
 
     @app.post("/v2/conflicts/{conflict_id}/resolve")
-    def resolve_v2(conflict_id: UUID, body: ResolutionV2, actor: Actor):
+    def resolve_v2(conflict_id: UUID, body: Resolution, actor: Actor):
         with user_transaction(engine, actor) as connection:
             result = resolve_conflict(connection, conflict_id, body, entity_type=body.entity_type)
-        return result
-
-    @app.post("/v1/sync/upload")
-    def upload(body: Upload, actor: Actor):
-        with user_transaction(engine, actor) as connection:
-            result = apply_upload(connection, actor, body)
-        # HTTP acknowledgement happens only after the transaction commits.
-        return result
-
-    @app.get("/v1/conflicts")
-    def conflicts(actor: Actor, dataset_id: str):
-        table = ExpenseConflict.__table__
-        with user_transaction(engine, actor) as connection:
-            rows = (
-                connection.execute(
-                    sa.select(table)
-                    .where(table.c.dataset_id == dataset_id, table.c.resolved_at.is_(None))
-                    .order_by(table.c.created_at, table.c.id)
-                    .limit(100)
-                )
-                .mappings()
-                .all()
-            )
-            result = []
-            for row in rows:
-                current = current_record(connection, dataset_id, row["record_id"], lock=False)
-                result.append(
-                    {
-                        **dict(row),
-                        "current_record": snapshot(current),
-                        "current_version": current["row_version"] if current else 0,
-                    }
-                )
-            return {"conflicts": result}
-
-    @app.post("/v1/conflicts/{conflict_id}/resolve")
-    def resolve(conflict_id: UUID, body: Resolution, actor: Actor):
-        with user_transaction(engine, actor) as connection:
-            result = resolve_conflict(connection, conflict_id, body)
         return result
 
     if web_directory is not None:
