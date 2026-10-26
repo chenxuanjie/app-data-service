@@ -17,9 +17,11 @@
 .venv/Scripts/python.exe tools/build_docker_bundle.py --compose .local/api-only-input.yaml --api-only --docker wsl --dart C:/Users/win10/tools/flutter/bin/dart.bat
 ```
 
-输入 Compose 必须采用当前 [应用配置契约](application-scope.md)。已有部署只做显式配置转换，不能重新生成其密钥或密码。构建器离线安装锁定的 Linux wheel，构建、导出 gzip 归档、校验平台和镜像身份、重新导入，再运行真实 PostgreSQL/PowerSync/API 的隔离验证。通过后才替换交付目录；失败保留旧交付文件。
+输入 Compose 必须采用当前 [应用配置契约](application-scope.md)。已有部署只做显式配置转换，不能重新生成其密钥或密码。构建器离线安装锁定的 Linux wheel，构建、导出 gzip 归档、校验平台和镜像身份、重新导入，再执行 PostgreSQL/PowerSync/API 的隔离启动冒烟。通过这些交付检查后才替换交付目录；失败保留旧交付文件。
 
-不再接受 Web 工程、网页压缩包或网页来源凭据等参数，不需要编译 Flutter。验收中的 Dart 只运行同步测试客户端，不参与 API 镜像打包。
+构建和推送不强制完整测试集通过，默认不执行 pytest 或 Dart 全业务同步验收，报告记录 `businessTests: not_run`。需要完整业务验收时，在上述命令显式增加 `--full-validation`；该选项选择完整验收并要求它通过。独立运行 `tools/verify_stack.py` 默认仍表示请求完整容器验收；`--smoke-only` 只执行发布所需的启动检查。
+
+不再接受 Web 工程、网页压缩包或网页来源凭据等参数，不需要编译 Flutter。默认打包不需要 Dart；只有显式完整验收时，Dart 才运行同步测试客户端，不参与 API 镜像打包。
 
 ### 固定入口与失败定位
 
@@ -46,6 +48,6 @@ API 服务的 `/health` 用于健康检查；新应用使用 `/v1/apps/<app_id>/
 
 ## 验收与边界
 
-本地验证使用临时容器、临时卷、真实 PostgreSQL、PowerSync、SQLite 同步客户端和严格 TLS DSM 替身，覆盖迁移失败阻止启动、应用注册、登录/刷新/退出、跨账号及跨应用隔离、文件权限、离线同步、冲突及容器重启持久化，并检查镜像中没有 `/app/web`。
+默认本地验收使用临时容器与临时卷，检查启动前迁移失败拦截、应用注册、三个服务健康状态、API 健康和公钥、未登录访问边界及纯 API 镜像不含 `/app/web`。完整验收需显式选择，另行覆盖登录/刷新/退出、跨账号及跨应用隔离、文件权限、SQLite 客户端离线同步、冲突及容器重启持久化。报告区分 `artifact-and-startup` 与 `full-business`；业务测试未运行不能称为通过。
 
 模拟 DSM 和 HTTPX 协议验证不能替代真实 NAS 登录、浏览器同源网关或 Android/Windows 实机验收。容器镜像构建成功、已上传、已部署分别报告。不要将导入镜像描述为数据库自动回滚；迁移后回退需要先停止写入并审查备份与版本。
