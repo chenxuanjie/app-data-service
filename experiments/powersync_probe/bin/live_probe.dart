@@ -341,9 +341,10 @@ Future<void> main(List<String> args) async {
         },
         'business_preferences': {
           'id': 'live-preference',
-          'name': 'allocation_baseline',
+          // Exercise manual conflicts; allocation_baseline now merges by edit time.
+          'name': 'include_asset_costs',
           'sortOrder': 0,
-          'payload': '30000.123456',
+          'payload': false,
         },
       };
       Future<Map<String, dynamic>?> docRow(
@@ -389,7 +390,7 @@ Future<void> main(List<String> args) async {
         final winner = {
           ...original,
           'payload': entity == 'business_preferences'
-              ? '40000'
+              ? true
               : {
                   ...original['payload'] as Map,
                   entity == 'payroll_records' ? 'salary' : 'currentAmount':
@@ -399,7 +400,7 @@ Future<void> main(List<String> args) async {
         final candidate = {
           ...original,
           'payload': entity == 'business_preferences'
-              ? '50000'
+              ? false
               : {
                   ...original['payload'] as Map,
                   entity == 'payroll_records' ? 'salary' : 'currentAmount':
