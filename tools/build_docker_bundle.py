@@ -21,6 +21,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import yaml
+from docker_runtime import docker_runtime
 from render_stack import api_start_command
 from render_sync_config import render as render_sync_config
 
@@ -109,6 +110,11 @@ def main():
     parser.add_argument("--compose", type=Path, required=True)
     parser.add_argument("--dart", default=shutil.which("dart") or "dart")
     parser.add_argument(
+        "--full-validation",
+        action="store_true",
+        help="Opt in to full business/SDK acceptance; default is artifact and startup checks",
+    )
+    parser.add_argument(
         "--reuse-existing",
         type=Path,
         help="Repack an already validated release.json without rebuilding images",
@@ -122,6 +128,11 @@ def main():
         "--docker", choices=["native", "wsl"], default="wsl" if os.name == "nt" else "native"
     )
     args = parser.parse_args()
+    with docker_runtime(args.docker):
+        build(args)
+
+
+def build(args):
     docker = ["wsl", "-d", "Ubuntu", "--exec", "docker"] if args.docker == "wsl" else ["docker"]
 
     def linux(path):
@@ -292,6 +303,7 @@ def main():
             args.dart,
             "--report",
             str(details / "validation.json"),
+            *([] if args.full_validation else ["--smoke-only"]),
         ],
         timeout=360,
     )

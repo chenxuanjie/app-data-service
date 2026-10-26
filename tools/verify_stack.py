@@ -15,9 +15,32 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from docker_runtime import docker_runtime
 from render_stack import stack
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def capture_stack_state(docker, compose):
+    """Inspect only this test stack, never export Config.Env or credentials."""
+    try:
+        identifiers = subprocess.check_output(
+            [*compose, "ps", "--all", "--quiet"], text=True, timeout=15
+        ).splitlines()
+        if not identifiers:
+            return {"containers": []}
+        template = (
+            '{"name":{{json .Name}},"image":{{json .Config.Image}},'
+            '"status":{{json .State.Status}},"exitCode":{{.State.ExitCode}},'
+            '"oomKilled":{{.State.OOMKilled}},"restartCount":{{.RestartCount}},'
+            '"startedAt":{{json .State.StartedAt}},"finishedAt":{{json .State.FinishedAt}}}'
+        )
+        output = subprocess.check_output(
+            [*docker, "inspect", "--format", template, *identifiers], text=True, timeout=15
+        )
+        return {"containers": [json.loads(line) for line in output.splitlines()]}
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        return {"diagnosticError": type(error).__name__}
 
 
 def verification_stack(api_image):
@@ -36,6 +59,14 @@ def verification_stack(api_image):
     )
 
 
+def write_report(report, directory, destination):
+    (directory / "result.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    if destination:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-image", default="app-data-service:0.5.0-test")
@@ -44,7 +75,17 @@ def main():
         "--docker", choices=["native", "wsl"], default="wsl" if os.name == "nt" else "native"
     )
     parser.add_argument("--report", type=Path)
+    parser.add_argument(
+        "--smoke-only",
+        action="store_true",
+        help="Startup and artifact checks without business tests",
+    )
     args = parser.parse_args()
+    with docker_runtime(args.docker):
+        verify(args)
+
+
+def verify(args):
     docker = ["wsl", "-d", "Ubuntu", "--exec", "docker"] if args.docker == "wsl" else ["docker"]
     subprocess.run(
         [
@@ -120,8 +161,16 @@ def main():
         yaml.safe_dump(configuration, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
     compose = [*docker, "compose", "-p", directory.name, "-f", linux(compose_path)]
-    report = {"mode": "full Docker stack with strict TLS DSM substitute", "real_nas_tested": False}
+    report = {
+        "mode": "startup smoke"
+        if args.smoke_only
+        else "full Docker stack with strict TLS DSM substitute",
+        "validationScope": "artifact-and-startup" if args.smoke_only else "full-business",
+        "businessTests": "not_run" if args.smoke_only else "requested",
+        "real_nas_tested": False,
+    }
     started = False
+    stage = "postgres_startup"
     try:
         started = True
         subprocess.run(
@@ -129,6 +178,7 @@ def main():
             check=True,
             timeout=80,
         )
+        stage = "migration_failure_guard"
         failed_start = subprocess.run(
             [
                 *compose,
@@ -153,6 +203,7 @@ def main():
         assert "Database operation failed" in failed_start.stderr
         assert "Uvicorn running" not in failed_start.stderr
         report["migration_failure_prevents_api_start"] = True
+        stage = "stack_startup"
         subprocess.run(
             [*compose, "up", "-d", "--wait", "--wait-timeout", "90", "--pull", "never"],
             check=True,
@@ -183,6 +234,7 @@ def main():
             timeout=15,
         )
         report["migration_credentials_removed_from_api_process"] = True
+        stage = "api_contract"
         with httpx.Client(trust_env=False, timeout=35) as client:
             base = "http://127.0.0.1:18380"
             for path in ["/", "/settings/account", "/index.html", "/main.dart.js"]:
@@ -191,6 +243,12 @@ def main():
             assert client.get(base + "/v1/client-config").json()["browser_sessions"]
             assert client.get(base + "/v1/datasets").status_code == 401
             report["api_only_runtime_without_bundled_frontend"] = True
+            if args.smoke_only:
+                assert client.get(base + "/health").json() == {"status": "ok"}
+                assert client.get(base + "/.well-known/jwks.json").json()["keys"]
+                report["api_health_and_public_key"] = True
+                write_report(report, directory, args.report)
+                return
             users = {}
             for account in ["alice", "bob"]:
                 response = client.post(
@@ -287,6 +345,7 @@ def main():
             }
             client_path = directory / "client.json"
             client_path.write_text(json.dumps(config), encoding="utf-8")
+            stage = "live_sync"
             result = subprocess.run(
                 [args.dart, "run", "bin/live_probe.dart", str(client_path)],
                 cwd=ROOT / "experiments/powersync_probe",
@@ -298,7 +357,7 @@ def main():
             )
             (directory / "dart.log").write_text(result.stdout + result.stderr, encoding="utf-8")
             if result.returncode:
-                raise RuntimeError("Live sync failed; inspect ignored dart.log")
+                raise RuntimeError(f"Live sync failed; inspect {directory / 'dart.log'}")
             report.update(
                 next(
                     json.loads(line)
@@ -307,6 +366,7 @@ def main():
                 )
             )
             # A database container replacement must retain the sample tombstone.
+            stage = "database_recreation"
             subprocess.run(
                 [
                     *compose,
@@ -343,6 +403,7 @@ def main():
             assert stored == "5:true"
             report["database_container_recreation_retains_data"] = True
             # API sessions survive container replacement as well.
+            stage = "api_recreation_and_logout"
             subprocess.run(
                 [
                     *compose,
@@ -396,11 +457,19 @@ def main():
                 == 401
             )
             report["logout_revokes_api_access"] = True
-        (directory / "result.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        if args.report:
-            args.report.parent.mkdir(parents=True, exist_ok=True)
-            args.report.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        print(json.dumps(report), flush=True)
+        report["businessTests"] = "passed"
+        write_report(report, directory, args.report)
+    except BaseException as error:
+        failure = {
+            "status": "failed",
+            "stage": stage,
+            "errorType": type(error).__name__,
+            **capture_stack_state(docker, compose),
+        }
+        failure_path = directory / "failure.json"
+        failure_path.write_text(json.dumps(failure, indent=2), encoding="utf-8")
+        print(f"Stack verification failed at {stage}; diagnostics: {failure_path}", flush=True)
+        raise
     finally:
         if started:
             with (directory / "docker.log").open("w", encoding="utf-8") as log:

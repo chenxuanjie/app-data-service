@@ -21,6 +21,7 @@ import sqlalchemy as sa
 import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from docker_runtime import docker_runtime
 from psycopg import sql
 from render_sync_config import render as render_sync_config
 from sqlalchemy.engine import make_url
@@ -144,6 +145,11 @@ def run() -> None:
         help="Run the board game's actual Flutter PowerSync store tests",
     )
     args = parser.parse_args()
+    with docker_runtime(args.docker):
+        probe(args)
+
+
+def probe(args):
     registry = installed_applications()
     install_notes = None
     if args.application_scope_only:
