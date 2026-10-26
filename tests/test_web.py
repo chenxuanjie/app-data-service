@@ -3,7 +3,8 @@ from fastapi.testclient import TestClient
 from test_sessions import authenticated as authenticated_fixture
 
 from app_data_service.api import create_app
-from app_data_service.browser_sessions import COOKIE
+
+COOKIE = "__Host-app-session-zheri"
 
 
 @pytest.fixture(name="authenticated")
@@ -23,10 +24,11 @@ def web(authenticated, db, tmp_path):
             authority,
             "https://web.test/powersync/",
             sessions=manager,
-            browser_origin="https://web.test",
+            application_settings={"zheri": {"browser_origin": "https://web.test"}},
             web_directory=tmp_path,
         ),
         base_url="https://web.test",
+        headers={"X-App-ID": "zheri"},
     ) as client:
         yield client
 

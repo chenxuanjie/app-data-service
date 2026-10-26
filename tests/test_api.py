@@ -13,7 +13,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app_data_service.api import create_app
 from app_data_service.auth import API_AUDIENCE, SYNC_AUDIENCE, TokenAuthority
-from app_data_service.models import Expense, ExpenseConflict, MutationReceipt
+from app_data_service.modules.zheri.models import Expense, ExpenseConflict, MutationReceipt
 from app_data_service.store import user_transaction
 
 
@@ -32,8 +32,12 @@ def authority():
 
 @pytest.fixture
 def api(db, authority):
-    with TestClient(create_app(db.runtime, authority, "http://127.0.0.1:18090")) as client:
-        client.headers["Authorization"] = "Bearer " + authority.issue("alice", API_AUDIENCE)
+    with TestClient(
+        create_app(db.runtime, authority, "http://127.0.0.1:18090"), headers={"X-App-ID": "zheri"}
+    ) as client:
+        client.headers["Authorization"] = "Bearer " + authority.issue(
+            "alice", API_AUDIENCE, app_id="zheri"
+        )
         yield client
 
 
@@ -112,6 +116,7 @@ def test_invalid_tokens(api, authority, changes):
     token = jwt.encode(
         {
             "sub": "alice",
+            "app_id": "zheri",
             "iss": authority.issuer,
             "aud": API_AUDIENCE,
             "iat": now,
@@ -131,6 +136,7 @@ def test_token_header_and_claim_types(api, authority, kind):
     now = int(datetime.now(UTC).timestamp())
     claims = {
         "sub": "alice",
+        "app_id": "zheri",
         "iss": authority.issuer,
         "aud": API_AUDIENCE,
         "iat": now,
@@ -149,7 +155,7 @@ def test_token_header_and_claim_types(api, authority, kind):
 
 
 def test_transaction_deadline_cannot_leak_to_pool(db):
-    with user_transaction(db.runtime, "alice") as connection:
+    with user_transaction(db.runtime, "alice", app_id="zheri") as connection:
         assert connection.exec_driver_sql("SHOW transaction_timeout").scalar_one() == "20s"
     with db.runtime.connect() as connection:
         assert connection.exec_driver_sql("SHOW transaction_timeout").scalar_one() == "0"
@@ -163,7 +169,7 @@ def test_upload_retry_is_durable_and_reused_id_rejected(api, db):
     changed = deepcopy(body)
     changed["mutations"][0]["record"]["name"] = "重放篡改"
     assert api.post("/v2/sync/upload", json=changed).status_code == 409
-    with user_transaction(db.runtime, "alice") as c:
+    with user_transaction(db.runtime, "alice", app_id="zheri") as c:
         row = (
             c.execute(sa.select(Expense).where(Expense.id == body["mutations"][0]["record_id"]))
             .mappings()
@@ -233,7 +239,7 @@ def test_concurrent_writers_keep_both_versions_and_resolve(api, db):
         ).status_code
         == 409
     )
-    with user_transaction(db.runtime, "alice") as c:
+    with user_transaction(db.runtime, "alice", app_id="zheri") as c:
         assert (
             c.scalar(sa.select(Expense.name).where(Expense.id == first["record_id"]))
             == conflict["candidate"]["name"]
@@ -249,7 +255,7 @@ def test_rejected_batch_rolls_back_all_changes_and_receipts(api, db):
     changed["record"]["name"] = "错误重放"
     body = upload(valid, changed, client_id=existing_body["client_id"])
     assert api.post("/v2/sync/upload", json=body).status_code == 409
-    with user_transaction(db.runtime, "alice") as c:
+    with user_transaction(db.runtime, "alice", app_id="zheri") as c:
         assert c.scalar(sa.select(Expense.id).where(Expense.id == valid["record_id"])) is None
         assert (
             c.scalar(
@@ -272,7 +278,7 @@ def test_account_and_app_isolation_at_api_and_rls(api, db, authority):
     initial = mutation()
     post(api, upload(initial))
     conflict_id = post(api, upload(mutation(initial["record_id"], amount="60")))[0]["conflict_id"]
-    api.headers["Authorization"] = "Bearer " + authority.issue("bob", API_AUDIENCE)
+    api.headers["Authorization"] = "Bearer " + authority.issue("bob", API_AUDIENCE, app_id="zheri")
     assert api.get("/v2/conflicts", params={"dataset_id": "alice-data"}).json() == {"conflicts": []}
     assert (
         api.post(
@@ -281,7 +287,7 @@ def test_account_and_app_isolation_at_api_and_rls(api, db, authority):
         ).status_code
         == 404
     )
-    with user_transaction(db.runtime, "bob") as c:
+    with user_transaction(db.runtime, "bob", app_id="zheri") as c:
         assert (
             c.scalar(sa.select(ExpenseConflict.id).where(ExpenseConflict.id == conflict_id)) is None
         )
@@ -310,5 +316,7 @@ def test_invalid_values_never_enter_upload_queue_server(api, field, value):
 
 def test_body_limit_and_unknown_identity(api, authority):
     assert api.post("/v2/sync/upload", content=b"x" * (512 * 1024 + 1)).status_code == 413
-    api.headers["Authorization"] = "Bearer " + authority.issue("unknown", API_AUDIENCE)
+    api.headers["Authorization"] = "Bearer " + authority.issue(
+        "unknown", API_AUDIENCE, app_id="zheri"
+    )
     assert api.post("/v1/sync/credentials").status_code == 404

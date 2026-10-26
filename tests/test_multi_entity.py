@@ -11,8 +11,8 @@ from sqlalchemy.exc import DBAPIError
 
 from app_data_service.api import create_app
 from app_data_service.auth import API_AUDIENCE, TokenAuthority
-from app_data_service.entities import canonical_record, database_values
-from app_data_service.models import Asset, Expense, ExpenseCategory, MutationReceipt
+from app_data_service.modules.zheri.entities import canonical_record, database_values
+from app_data_service.modules.zheri.models import Asset, Expense, ExpenseCategory, MutationReceipt
 from app_data_service.store import user_transaction
 
 
@@ -27,8 +27,12 @@ def client(db):
         ),
         "multi-entity-test",
     )
-    with TestClient(create_app(db.runtime, authority, "http://127.0.0.1:18090")) as client:
-        client.headers["Authorization"] = "Bearer " + authority.issue("alice", API_AUDIENCE)
+    with TestClient(
+        create_app(db.runtime, authority, "http://127.0.0.1:18090"), headers={"X-App-ID": "zheri"}
+    ) as client:
+        client.headers["Authorization"] = "Bearer " + authority.issue(
+            "alice", API_AUDIENCE, app_id="zheri"
+        )
         client.authority = authority
         yield client
 
@@ -90,7 +94,7 @@ def test_mixed_upload_exact_money_date_color_and_category_reference(client, db):
     response = upload(client, category, asset, expense)
     assert response.status_code == 200
     assert [r["version"] for r in response.json()["results"]] == [1, 1, 1]
-    with user_transaction(db.runtime, "alice") as c:
+    with user_transaction(db.runtime, "alice", app_id="zheri") as c:
         row = c.execute(sa.select(Asset).where(Asset.id == asset["record_id"])).mappings().one()
         assert row["price"] == Decimal("6899.100001")
         assert row["purchase_date"] == date(2024, 2, 29)
@@ -100,6 +104,7 @@ def test_mixed_upload_exact_money_date_color_and_category_reference(client, db):
             == category["record_id"]
         )
     assert client.get("/v1/capabilities").json() == {
+        "app_id": "zheri",
         "sync_protocols": [2],
         "entities": [
             "expenses",
@@ -138,7 +143,7 @@ def test_new_entities_conflict_keep_both_versions_and_resolve(client, db, entity
     assert client.post(path, json={**body, "choice": "server"}).status_code == 409
     deleted = mutation(entity, id=original["record_id"], version=2, kind="delete")
     assert upload(client, deleted).json()["results"][0]["version"] == 3
-    with user_transaction(db.runtime, "alice") as c:
+    with user_transaction(db.runtime, "alice", app_id="zheri") as c:
         model = Asset if entity == "assets" else ExpenseCategory
         assert (
             c.scalar(sa.select(model.deleted_at).where(model.id == original["record_id"]))
@@ -171,7 +176,7 @@ def test_rls_read_write_app_isolation_and_no_hard_delete(client, db, entity):
     assert upload(client, row, dataset="other-data").status_code == 404
     assert upload(client, row).status_code == 200
     model = Asset if entity == "assets" else ExpenseCategory
-    with user_transaction(db.runtime, "bob") as c:
+    with user_transaction(db.runtime, "bob", app_id="zheri") as c:
         assert c.scalar(sa.select(model.id).where(model.id == row["record_id"])) is None
         assert (
             c.execute(
@@ -180,12 +185,12 @@ def test_rls_read_write_app_isolation_and_no_hard_delete(client, db, entity):
             == 0
         )
     with pytest.raises(DBAPIError):
-        with user_transaction(db.runtime, "alice") as c:
+        with user_transaction(db.runtime, "alice", app_id="zheri") as c:
             c.execute(sa.delete(model).where(model.id == row["record_id"]))
 
 
 def test_category_cannot_reference_other_dataset_and_batch_rolls_back(client, db):
-    with user_transaction(db.runtime, "bob") as c:
+    with user_transaction(db.runtime, "bob", app_id="zheri") as c:
         foreign_id = str(uuid4())
         c.execute(
             sa.insert(ExpenseCategory).values(
@@ -194,7 +199,7 @@ def test_category_cannot_reference_other_dataset_and_batch_rolls_back(client, db
         )
     asset, expense = mutation("assets"), mutation("expenses", categoryId=foreign_id)
     assert upload(client, asset, expense).status_code == 409
-    with user_transaction(db.runtime, "alice") as c:
+    with user_transaction(db.runtime, "alice", app_id="zheri") as c:
         assert c.scalar(sa.select(Asset.id).where(Asset.id == asset["record_id"])) is None
         assert (
             c.scalar(
@@ -251,7 +256,7 @@ def test_new_table_rls_also_rejects_direct_cross_scope_inserts(db, entity, datas
     model = Asset if entity == "assets" else ExpenseCategory
     values = database_values(entity, canonical_record(entity, record(entity)), dataset)
     with pytest.raises(DBAPIError) as error:
-        with user_transaction(db.runtime, "alice") as c:
+        with user_transaction(db.runtime, "alice", app_id="zheri") as c:
             c.execute(sa.insert(model).values(**values))
     assert error.value.orig.sqlstate == "42501"
 
@@ -270,6 +275,6 @@ def test_asset_database_constraints_reject_bypassed_converter(client, db, change
     value = mutation("assets")
     assert upload(client, value).status_code == 200
     with pytest.raises(DBAPIError) as error:
-        with user_transaction(db.runtime, "alice") as c:
+        with user_transaction(db.runtime, "alice", app_id="zheri") as c:
             c.execute(sa.update(Asset).where(Asset.id == value["record_id"]).values(**changes))
     assert error.value.orig.sqlstate == "23514"

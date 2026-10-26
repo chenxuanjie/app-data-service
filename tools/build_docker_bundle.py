@@ -21,6 +21,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import yaml
+from render_sync_config import render as render_sync_config
 from service_web_bundle import extract_web, verify_web
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -301,9 +302,7 @@ def main():
     }:
         raise ValueError("Web input changed during image build")
     if original is None:
-        update_sync_rules(
-            configuration, (ROOT / "deploy/powersync/sync-config.yaml").read_text(encoding="utf-8")
-        )
+        update_sync_rules(configuration, render_sync_config())
     configuration["services"]["api"]["image"] = image
     for service in configuration["services"].values():
         service["pull_policy"] = "never"

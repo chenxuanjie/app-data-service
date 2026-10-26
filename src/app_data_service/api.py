@@ -1,88 +1,33 @@
-"""Authenticated minimum API; there is deliberately no development login route."""
+"""Compose shared services and explicitly installed application modules."""
 
-import asyncio
 import base64
 import os
-import time
-from collections import OrderedDict
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
 from urllib.parse import urlsplit
-from uuid import UUID
 
-import httpx
 import jwt
-import sqlalchemy as sa
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import TimeoutError as PoolTimeout
-from starlette.background import BackgroundTask
-from starlette.responses import StreamingResponse
 
-from .auth import SYNC_AUDIENCE, TokenAuthority
+from .applications import ApplicationRegistry
+from .auth import TokenAuthority
 from .browser_sessions import BrowserSessions
 from .config import database_url, make_engine
 from .dsm import DsmFailure, DsmProvider
-from .entities import ENTITY_MODELS
 from .files import AccountFiles
-from .models import Dataset, ExpenseConflict, SyncConflict, User
-from .sessions import REFRESH_AUDIENCE, REFRESH_LIFETIME, SessionManager
-from .store import user_transaction
-from .sync import (
-    ReplayError,
-    Resolution,
-    ScopeError,
-    Upload,
-    apply_upload,
-    current_record,
-    resolve_conflict,
-    snapshot,
-)
+from .middleware import BoundedBody
+from .modules.registry import installed_applications
+from .platform_routes import build_router
+from .runtime import ServiceRuntime
+from .sessions import SessionManager
+from .sync_gateway import install as install_sync_gateway
 from .web import SameOriginWeb
-
-
-class BoundedBody:
-    """Bound body reads before FastAPI parses JSON (chunked requests included)."""
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            return await self.app(scope, receive, send)
-        body = bytearray()
-        try:
-            async with asyncio.timeout(10):
-                while True:
-                    message = await receive()
-                    if message["type"] == "http.disconnect":
-                        return
-                    body.extend(message.get("body", b""))
-                    if len(body) > 512 * 1024:
-                        return await JSONResponse({"detail": "Request too large"}, 413)(
-                            scope, receive, send
-                        )
-                    if not message.get("more_body", False):
-                        break
-        except TimeoutError:
-            return await JSONResponse({"detail": "Request body timeout"}, 408)(scope, receive, send)
-        delivered = False
-
-        async def replay():
-            nonlocal delivered
-            if not delivered:
-                delivered = True
-                return {"type": "http.request", "body": bytes(body), "more_body": False}
-            return await receive()
-
-        await self.app(scope, replay, send)
 
 
 def create_app(
@@ -94,17 +39,25 @@ def create_app(
     sessions: SessionManager | None = None,
     proxy_upstream: str | None = None,
     allowed_origins: list[str] | None = None,
-    browser_origin: str | None = None,
-    file_roots: dict[str, str] | None = None,
+    applications: ApplicationRegistry | None = None,
+    application_settings: dict | None = None,
     web_directory: Path | None = None,
 ) -> FastAPI:
     endpoint = urlsplit(sync_endpoint)
     if (
         endpoint.scheme not in {"https", "http"}
         or not endpoint.hostname
-        or (endpoint.username or endpoint.password or endpoint.query or endpoint.fragment)
+        or endpoint.username
+        or endpoint.password
+        or endpoint.query
+        or endpoint.fragment
     ):
         raise ValueError("A public sync endpoint without credentials is required")
+    applications = applications or (sessions.applications if sessions else installed_applications())
+    if sessions and sessions.applications is not applications:
+        raise ValueError("Authentication and API must use the same installed registry")
+    applications.validate_database(engine)
+    settings = applications.validate_settings(application_settings or {})
 
     @asynccontextmanager
     async def lifespan(_):
@@ -113,136 +66,48 @@ def create_app(
             engine.dispose()
 
     app = FastAPI(title="App Data Service", version="0.5.0", lifespan=lifespan)
+    runtime = ServiceRuntime(app, engine, authority, applications, sync_endpoint, sessions)
+    app.state.runtime, app.state.applications, app.state.engine = runtime, applications, engine
     app.add_middleware(BoundedBody)
     if allowed_origins:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=allowed_origins,
-            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
             allow_headers=[
                 "Authorization",
                 "Content-Type",
                 "X-User-Agent",
                 "X-PowerSync-User-Agent",
+                "X-App-ID",
             ],
             allow_credentials=False,
         )
-    bearer = HTTPBearer(auto_error=False)
-
-    @app.get("/v1/client-config")
-    def client_config():
-        return {
-            "api_origin": f"{endpoint.scheme}://{endpoint.netloc}",
-            "browser_sessions": bool(sessions and browser_origin),
-        }
-
-    def identity(
-        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
-    ) -> str:
-        if credentials is None or credentials.scheme.lower() != "bearer":
-            raise HTTPException(
-                401, "Authentication required", headers={"WWW-Authenticate": "Bearer"}
-            )
-        try:
-            return (
-                sessions.verify_access(credentials.credentials)
-                if sessions
-                else authority.verify(credentials.credentials)
-            )
-        except jwt.InvalidTokenError as error:
-            raise HTTPException(401, "Invalid or expired token") from error
-
-    Actor = Annotated[str, Depends(identity)]
-
     if sessions:
-        files = AccountFiles(sessions, file_roots or {})
-
-        @app.get("/v1/services")
-        def service_capabilities(actor: Actor):
-            return {"file_areas": sorted(files.roots), "updates": "updates" in files.roots}
-
-        @app.get("/v1/files/{area}/{path:path}")
-        async def read_file(
-            area: str,
-            path: str,
-            request: Request,
-            actor: Actor,
-            credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
-        ):
-            read = await files.open(
-                credentials.credentials, area, path, request.headers.get("range")
-            )
-            return StreamingResponse(
-                read.chunks,
-                status_code=read.status,
-                headers=read.headers,
-                background=BackgroundTask(read.close),
-            )
-
-        @app.get("/v1/updates/manifest")
-        async def update_manifest(
-            actor: Actor,
-            credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
-            channel: str = "stable",
-        ):
-            return JSONResponse(
-                await files.manifest(credentials.credentials, channel),
-                headers={"Cache-Control": "no-store"},
-            )
-
-    if proxy_upstream:
-
-        @app.api_route("/powersync/{path:path}", methods=["GET", "POST"])
-        async def sync_proxy(path: str, request: Request):
-            # Fixed container upstream; no caller-supplied host or DSM credentials.
-            client = httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(90, connect=5))
-            target = proxy_upstream.rstrip("/") + "/" + path
-            headers = {
-                key: value
-                for key, value in request.headers.items()
-                if key.lower()
-                in {
-                    "authorization",
-                    "content-type",
-                    "accept",
-                    "x-user-agent",
-                    "x-powersync-user-agent",
-                    "user-agent",
-                }
-            }
-            try:
-                upstream = await client.send(
-                    client.build_request(
-                        request.method,
-                        target,
-                        params=request.query_params,
-                        headers=headers,
-                        content=await request.body(),
-                    ),
-                    stream=True,
+        for definition in applications.definitions:
+            config = settings.get(definition.id, {})
+            if config.get("browser_origin"):
+                runtime.browsers[definition.id] = BrowserSessions(
+                    sessions, config["browser_origin"], definition.id
                 )
-            except httpx.HTTPError:
-                await client.aclose()
-                return JSONResponse({"detail": "Sync service unavailable"}, 503)
-
-            async def close():
-                await upstream.aclose()
-                await client.aclose()
-
-            return StreamingResponse(
-                upstream.aiter_raw(),
-                status_code=upstream.status_code,
-                headers={
-                    "X-Accel-Buffering": "no",
-                    "Cache-Control": "no-store",
-                    **{
-                        key: value
-                        for key, value in upstream.headers.items()
-                        if key.lower() in {"content-type", "content-encoding"}
-                    },
-                },
-                background=BackgroundTask(close),
-            )
+            if definition.file_areas:
+                runtime.files[definition.id] = AccountFiles(
+                    sessions, config.get("file_roots", {}), definition.id
+                )
+        if len({b.origin for b in runtime.browsers.values()}) != len(runtime.browsers):
+            raise ValueError("Each application requires its own browser origin")
+    runtime.platform_router = build_router(runtime)
+    app.include_router(runtime.platform_router)
+    for definition in applications.definitions:
+        if definition.router_factory:
+            router = definition.router_factory(runtime)
+            if any(
+                getattr(route, "application_id", None) != definition.id for route in router.routes
+            ):
+                raise ValueError("Every business route must be bound to its application module")
+            app.include_router(router)
+    if proxy_upstream:
+        install_sync_gateway(app, proxy_upstream)
 
     @app.exception_handler(DsmFailure)
     async def dsm_error(_, error):
@@ -252,129 +117,9 @@ def create_app(
     async def invalid_token(_, error):
         return JSONResponse({"detail": "session_rejected"}, 401)
 
-    if sessions:
-        quota: OrderedDict[str, tuple[float, int]] = OrderedDict()
-        capacity = asyncio.Semaphore(4)
-
-        async def authenticate(body: Login, request: Request):
-            key = request.client.host if request.client else "unknown"
-            now = time.monotonic()
-            start, count = quota.get(key, (now, 0))
-            if now - start >= 60:
-                start, count = now, 0
-            quota[key] = (start, count + 1)
-            quota.move_to_end(key)
-            if len(quota) > 1024:
-                quota.popitem(last=False)
-            if count >= 10:
-                raise HTTPException(429, "rate_limited")
-            try:
-                await asyncio.wait_for(capacity.acquire(), timeout=1)
-            except TimeoutError as error:
-                raise HTTPException(429, "rate_limited") from error
-            try:
-                async with asyncio.timeout(30):
-                    verified = await sessions.provider.login(body.account, body.password, body.otp)
-                    try:
-                        return await asyncio.to_thread(sessions.create, verified)
-                    except Exception:
-                        await sessions.provider.logout(verified.context)
-                        raise
-            except TimeoutError as error:
-                raise DsmFailure("provider_unavailable", 503) from error
-            finally:
-                capacity.release()
-
-        @app.post("/v1/auth/login")
-        async def login(body: Login, request: Request):
-            return JSONResponse(
-                await authenticate(body, request), headers={"Cache-Control": "no-store"}
-            )
-
-        if browser_origin:
-            browser = BrowserSessions(sessions, browser_origin)
-
-            @app.post("/v1/auth/browser/bootstrap")
-            async def browser_bootstrap(request: Request):
-                # Same quota as authentication; no uncontrolled anonymous session allocation.
-                key = "browser:" + (request.client.host if request.client else "unknown")
-                now = time.monotonic()
-                start, count = quota.get(key, (now, 0))
-                if now - start >= 60:
-                    start, count = now, 0
-                quota[key] = (start, count + 1)
-                quota.move_to_end(key)
-                if len(quota) > 1024:
-                    quota.popitem(last=False)
-                if count >= 30:
-                    raise HTTPException(429, "rate_limited")
-                return await asyncio.to_thread(browser.bootstrap, request)
-
-            @app.post("/v1/auth/browser/login")
-            async def browser_login(body: Login, request: Request):
-                identifier = browser.check(request)
-                await asyncio.to_thread(browser.begin_login, identifier)
-                result = None
-                try:
-                    result = await authenticate(body, request)
-                    data = await asyncio.to_thread(browser.finish_login, identifier, result)
-                    return JSONResponse(data, headers={"Cache-Control": "no-store"})
-                except Exception:
-                    if result:
-                        claims = authority.claims(
-                            result["refresh_token"],
-                            audience=REFRESH_AUDIENCE,
-                            maximum_age=REFRESH_LIFETIME,
-                        )
-                        context = await asyncio.to_thread(
-                            sessions.revoke, claims["sub"], claims["session_id"]
-                        )
-                        await sessions.provider.logout(context)
-                    await asyncio.to_thread(browser.reset_login, identifier)
-                    raise
-
-            @app.post("/v1/auth/browser/restore")
-            async def browser_restore(request: Request):
-                try:
-                    return await browser.restore(request)
-                except TimeoutError as error:
-                    raise DsmFailure() from error
-
-            @app.post("/v1/auth/browser/logout")
-            async def browser_logout(request: Request):
-                return await browser.logout(request)
-
-        @app.post("/v1/auth/refresh")
-        async def refresh(body: Refresh):
-            try:
-                async with asyncio.timeout(15):
-                    return await sessions.refresh(body.refresh_token)
-            except TimeoutError as error:
-                raise DsmFailure() from error
-
-        @app.post("/v1/auth/logout")
-        async def logout(body: Refresh):
-            claims = authority.claims(
-                body.refresh_token, audience=REFRESH_AUDIENCE, maximum_age=REFRESH_LIFETIME
-            )
-            context = await asyncio.to_thread(
-                sessions.revoke, claims["sub"], claims.get("session_id")
-            )
-            await sessions.provider.logout(context)
-            return {"revoked": True}
-
     @app.exception_handler(RequestValidationError)
     async def invalid_body(_, error):
-        # Do not echo raw authentication, payload or SQL values into errors.
         return JSONResponse({"detail": "Invalid request payload"}, 422)
-
-    @app.exception_handler(ScopeError)
-    async def forbidden(_, error):
-        return JSONResponse({"detail": str(error)}, 404)
-
-    @app.exception_handler(ReplayError)
-    async def stale(_, error):
-        return JSONResponse({"detail": str(error)}, 409)
 
     @app.exception_handler(DBAPIError)
     async def database_failure(_, error):
@@ -398,97 +143,12 @@ def create_app(
     def jwks():
         return {"keys": [authority.jwk]}
 
-    @app.post("/v1/sync/credentials")
-    def credentials(actor: Actor):
-        with user_transaction(engine, actor) as connection:
-            if connection.scalar(sa.select(User.id).where(User.id == actor)) is None:
-                raise ScopeError("Account unavailable")
-        return {
-            "endpoint": sync_endpoint,
-            "token": authority.issue(actor, SYNC_AUDIENCE),
-            "user_id": actor,
-        }
-
-    @app.get("/v1/datasets")
-    def datasets(actor: Actor):
-        with user_transaction(engine, actor) as connection:
-            return {
-                "datasets": [
-                    dict(row)
-                    for row in connection.execute(
-                        sa.select(Dataset.id, Dataset.name, Dataset.kind).where(
-                            Dataset.app_id == "zheri"
-                        )
-                    ).mappings()
-                ]
-            }
-
-    @app.get("/v1/capabilities")
-    def capabilities(actor: Actor):
-        return {
-            "sync_protocols": [2],
-            "entities": list(ENTITY_MODELS),
-            "max_mutations": 100,
-            "record_merge": "three_way_v1",
-            "automatic_preferences": {
-                "allocation_baseline": "latest_edit",
-                "allocation_order": "latest_edit",
-            },
-        }
-
-    @app.post("/v2/sync/upload")
-    def upload_v2(body: Upload, actor: Actor):
-        with user_transaction(engine, actor) as connection:
-            result = apply_upload(connection, actor, body)
-        return result
-
-    @app.get("/v2/conflicts")
-    def conflicts_v2(actor: Actor, dataset_id: str):
-        result = []
-        with user_transaction(engine, actor) as connection:
-            for entity_type in ENTITY_MODELS:
-                table = (ExpenseConflict if entity_type == "expenses" else SyncConflict).__table__
-                conditions = [table.c.dataset_id == dataset_id, table.c.resolved_at.is_(None)]
-                if entity_type != "expenses":
-                    conditions.append(table.c.entity_type == entity_type)
-                rows = connection.execute(
-                    sa.select(table)
-                    .where(*conditions)
-                    .order_by(table.c.created_at, table.c.id)
-                    .limit(100)
-                ).mappings()
-                for row in rows:
-                    current = current_record(
-                        connection,
-                        dataset_id,
-                        row["record_id"],
-                        lock=False,
-                        entity_type=entity_type,
-                    )
-                    result.append(
-                        {
-                            **dict(row),
-                            "entity_type": entity_type,
-                            "current_record": snapshot(current),
-                            "current_version": current["row_version"] if current else 0,
-                        }
-                    )
-        result.sort(key=lambda row: (row["created_at"], str(row["id"])))
-        return {"conflicts": result[:100]}
-
-    @app.post("/v2/conflicts/{conflict_id}/resolve")
-    def resolve_v2(conflict_id: UUID, body: Resolution, actor: Actor):
-        with user_transaction(engine, actor) as connection:
-            result = resolve_conflict(connection, conflict_id, body, entity_type=body.entity_type)
-        return result
-
     if web_directory is not None:
         app.add_middleware(SameOriginWeb, directory=web_directory)
     return app
 
 
 def from_environment() -> FastAPI:
-    # No insecure fallback signing key, dev identity or automatic migration.
     key = (
         base64.b64decode(os.environ["APP_DATA_SIGNING_KEY_B64"], validate=True)
         if "APP_DATA_SIGNING_KEY_B64" in os.environ
@@ -496,6 +156,7 @@ def from_environment() -> FastAPI:
     )
     authority = TokenAuthority(key, os.environ["APP_DATA_ISSUER"])
     engine = make_engine(database_url())
+    applications = installed_applications()
     mode = os.environ.get("APP_DATA_AUTH_MODE", "dsm")
     if mode == "dsm":
         provider = DsmProvider(
@@ -503,7 +164,7 @@ def from_environment() -> FastAPI:
             identity_origin=os.environ.get("APP_DATA_DSM_IDENTITY_ORIGIN"),
             verify=os.environ.get("APP_DATA_DSM_CA") or True,
         )
-        sessions = SessionManager(engine, authority, provider, key)
+        sessions = SessionManager(engine, authority, provider, key, applications=applications)
     elif mode == "probe" and authority.issuer == "local-sync-probe":
         sessions = None
     else:
@@ -514,34 +175,15 @@ def from_environment() -> FastAPI:
         os.environ["APP_DATA_SYNC_ENDPOINT"],
         dispose_engine=True,
         sessions=sessions,
+        applications=applications,
+        application_settings=applications.settings_from_environment(os.environ),
         proxy_upstream=os.environ.get("APP_DATA_POWERSYNC_UPSTREAM"),
         allowed_origins=[
-            value.strip()
-            for value in os.environ.get("APP_DATA_ALLOWED_ORIGINS", "").split(",")
-            if value.strip()
+            v.strip()
+            for v in os.environ.get("APP_DATA_ALLOWED_ORIGINS", "").split(",")
+            if v.strip()
         ],
-        browser_origin=os.environ.get("APP_DATA_BROWSER_ORIGIN"),
-        file_roots={
-            area: os.environ[key]
-            for area, key in (
-                ("updates", "APP_DATA_UPDATES_ROOT"),
-                ("resources", "APP_DATA_RESOURCES_ROOT"),
-            )
-            if os.environ.get(key)
-        },
         web_directory=Path(os.environ["APP_DATA_WEB_DIRECTORY"])
         if os.environ.get("APP_DATA_WEB_DIRECTORY")
         else None,
     )
-
-
-class Login(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    account: str = Field(min_length=1, max_length=200)
-    password: str = Field(min_length=1, max_length=4096)
-    otp: str | None = Field(default=None, max_length=32)
-
-
-class Refresh(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    refresh_token: str = Field(min_length=1, max_length=8192)

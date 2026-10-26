@@ -22,23 +22,113 @@ import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from psycopg import sql
+from render_sync_config import render as render_sync_config
 from sqlalchemy.engine import make_url
 
-from app_data_service.auth import API_AUDIENCE, TokenAuthority
+from app_data_service.applications import ApplicationRegistry
+from app_data_service.auth import API_AUDIENCE, SYNC_AUDIENCE, TokenAuthority
 from app_data_service.cli import local_config, migrate
 from app_data_service.config import make_engine
-from app_data_service.entities import canonical_record, database_values
-from app_data_service.models import (
-    App,
-    Asset,
-    Dataset,
-    DatasetMember,
-    Expense,
-    ExpenseCategory,
-    User,
-)
+from app_data_service.models import App, Dataset, DatasetMember, User
+from app_data_service.modules.registry import installed_applications
+from app_data_service.modules.zheri.entities import canonical_record, database_values
+from app_data_service.modules.zheri.models import Asset, Expense, ExpenseCategory
 
 ROOT = Path(__file__).resolve().parents[1]
+NOTE_SENTINEL = "10000000-0000-4000-8000-000000000001"
+
+
+def check_application_streams(authority):
+    """Black-box the pinned 1.27.0 NDJSON endpoint, including forged client parameters.
+
+    Protocol: packages/service-core/src/util/protocol-types.ts and
+    routes/endpoints/sync-stream.ts in powersync-service v1.27.0.
+    This is a bounded diagnostic, never a replacement client sync engine.
+    """
+
+    def download(app_id, actor="alice", *, explicit=False, token=None):
+        token = token or authority.issue(actor, SYNC_AUDIENCE, app_id=app_id)
+        body = {
+            "buckets": [],
+            "raw_data": False,
+            "parameters": {"app_id": "zheri", "user_id": "alice"},
+        }
+        if explicit:
+            body["streams"] = {
+                "include_defaults": True,
+                "subscriptions": [
+                    {
+                        "stream": "private_expenses",
+                        "parameters": {"app_id": "zheri"},
+                        "override_priority": None,
+                    }
+                ],
+            }
+        objects, total = set(), 0
+        with (
+            httpx.Client(trust_env=False, timeout=10) as client,
+            client.stream(
+                "POST",
+                "http://127.0.0.1:18290/sync/stream",
+                json=body,
+                headers={"Authorization": "Token " + token, "Accept": "application/x-ndjson"},
+            ) as response,
+        ):
+            if response.status_code != 200:
+                raise RuntimeError(f"PowerSync stream rejected: {response.status_code}")
+            deadline = time.monotonic() + 20
+            for line in response.iter_lines():
+                total += len(line)
+                if total > 2 * 1024 * 1024 or time.monotonic() > deadline:
+                    raise TimeoutError("Application stream probe budget exceeded")
+                value = json.loads(line)
+                for entry in value.get("data", {}).get("data", []):
+                    if entry.get("op") == "PUT":
+                        objects.add(entry["object_id"])
+                if "checkpoint_complete" in value:
+                    return objects
+        raise RuntimeError("PowerSync closed before a complete checkpoint")
+
+    deadline = time.monotonic() + 35
+    while "scope-zheri-only" not in download("zheri"):
+        if time.monotonic() > deadline:
+            raise TimeoutError("Application stream replication startup")
+        time.sleep(0.2)
+    assert download("zheri") == {"scope-zheri-only"}, "Other module leaked into Zheri"
+    deadline = time.monotonic() + 35
+    while NOTE_SENTINEL not in download("reading_notes"):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Third-application replication startup")
+        time.sleep(0.2)
+    assert download("reading_notes") == {NOTE_SENTINEL}, "Other app leaked into notes"
+    assert download("reading_notes", explicit=True) == {NOTE_SENTINEL}, (
+        "Subscription escaped notes scope"
+    )
+    assert download("reading_notes", "bob") == set(), "Other user's notes leaked"
+    assert download("board_game_agent") == set(), "Cross-application data leaked"
+    assert download("board_game_agent", explicit=True) == set(), "Subscription escaped app scope"
+    assert download("zheri", "bob") == set(), "Cross-user data leaked"
+    claims = authority.claims(
+        authority.issue("alice", SYNC_AUDIENCE, app_id="zheri"), audience=SYNC_AUDIENCE
+    )
+    del claims["app_id"]
+    import jwt
+
+    unscoped = jwt.encode(claims, authority.key, algorithm="RS256", headers={"kid": authority.kid})
+    assert download("zheri", token=unscoped) == set(), "Unscoped token received app data"
+    return {
+        "passed": [
+            "zheri_signed_app_download",
+            "board_token_no_zheri_download",
+            "forged_parameters_and_explicit_subscription_rejected",
+            "other_user_no_download",
+            "unscoped_token_no_download",
+            "third_application_own_stream_download",
+            "third_application_rejects_cross_app_subscription",
+            "third_application_cross_user_isolation",
+        ],
+        "platform": "powersync-service-1.27.0",
+    }
 
 
 def run() -> None:
@@ -47,7 +137,17 @@ def run() -> None:
         "--docker", choices=["native", "wsl"], default="wsl" if os.name == "nt" else "native"
     )
     parser.add_argument("--dart", default=shutil.which("dart") or "dart")
+    parser.add_argument("--application-scope-only", action="store_true")
     args = parser.parse_args()
+    registry = installed_applications()
+    install_notes = None
+    if args.application_scope_only:
+        # A fixed test fixture proves extension without modifying installed production modules.
+        sys.path.insert(0, str(ROOT / "tests"))
+        from notes_application import definition as notes_definition
+        from notes_application import install as install_notes
+
+        registry = ApplicationRegistry((*registry.definitions, notes_definition))
     docker = ["wsl", "-d", "Ubuntu", "--exec", "docker"] if args.docker == "wsl" else ["docker"]
 
     def host_path(path: Path) -> str:
@@ -103,7 +203,7 @@ def run() -> None:
         ),
     )
     (directory / "service.yaml").write_text(config_source, encoding="utf-8")
-    shutil.copyfile(ROOT / "deploy/powersync/sync-config.yaml", directory / "sync-config.yaml")
+    (directory / "sync-config.yaml").write_text(render_sync_config(registry), encoding="utf-8")
     env_path = directory / "compose.env"
     env_path.write_text(
         f"PS_DATA_SOURCE_URI={replication_url.render_as_string(hide_password=False)}\n"
@@ -130,7 +230,7 @@ def run() -> None:
                 "multi_entity": True,
                 "full_business": True,
                 "tokens": {
-                    user: authority.issue(user, API_AUDIENCE, seconds=900)
+                    user: authority.issue(user, API_AUDIENCE, seconds=900, app_id="zheri")
                     for user in ["alice", "bob"]
                 },
             }
@@ -162,7 +262,7 @@ def run() -> None:
         source = make_engine(source_urls["migrator"])
         engines.append(source)
         with source.begin() as c:
-            c.execute(sa.insert(App).values(id="other", name="other"))
+            c.execute(sa.insert(App).values(id="other", name="other", schema_name="other"))
             c.execute(
                 sa.insert(User), [{"id": user, "display_name": user} for user in ["alice", "bob"]]
             )
@@ -192,6 +292,33 @@ def run() -> None:
                 )
             )
         with source.begin() as c:
+            if args.application_scope_only:
+                install_notes(c)
+                c.execute(
+                    sa.insert(Dataset).values(
+                        id="notes-data", owner_id="alice", app_id="reading_notes", name="notes"
+                    )
+                )
+                c.execute(sa.insert(DatasetMember).values(dataset_id="notes-data", user_id="alice"))
+                c.execute(
+                    sa.text(
+                        "INSERT INTO reading_notes.notes(id,dataset_id,title,body) "
+                        "VALUES(:id,'notes-data','module sentinel','private notes')"
+                    ),
+                    {"id": NOTE_SENTINEL},
+                )
+                c.execute(
+                    sa.insert(Expense).values(
+                        id="scope-zheri-only",
+                        dataset_id="alice-data",
+                        name="scope sentinel",
+                        amount="1",
+                        cycle="monthly",
+                        category="",
+                        subcategory="",
+                        sort_order=0,
+                    )
+                )
             c.execute(
                 sa.insert(Asset).values(
                     **database_values(
@@ -278,6 +405,12 @@ def run() -> None:
             check=True,
             timeout=75,
         )
+        if args.application_scope_only:
+            print("PowerSync healthy; checking signed application streams", flush=True)
+            summary = check_application_streams(authority)
+            print(json.dumps(summary), flush=True)
+            (directory / "result.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            return
         print("PowerSync healthy; running independent Dart clients", flush=True)
         result = subprocess.run(
             [args.dart, "run", "bin/live_probe.dart", str(dart_config)],

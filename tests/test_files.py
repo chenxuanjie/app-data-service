@@ -89,8 +89,13 @@ def files(authenticated, db):
             authority,
             "https://data.test/powersync",
             sessions=manager,
-            file_roots={"updates": "/approved/updates", "resources": "/home/Apps/zheri"},
-        )
+            application_settings={
+                "zheri": {
+                    "file_roots": {"updates": "/approved/updates", "resources": "/home/Apps/zheri"}
+                }
+            },
+        ),
+        headers={"X-App-ID": "zheri"},
     ) as client:
         account = login(client)
         client.headers["Authorization"] = "Bearer " + account["access_token"]
@@ -100,6 +105,7 @@ def files(authenticated, db):
 def test_manifest_and_files_use_current_account_without_leaking_nas_secrets(files):
     client, download, _, _ = files
     assert client.get("/v1/services").json() == {
+        "app_id": "zheri",
         "file_areas": ["resources", "updates"],
         "updates": True,
     }

@@ -46,11 +46,12 @@ class FileRead:
 class AccountFiles:
     max_bytes = 1024 * 1024 * 1024
 
-    def __init__(self, sessions, roots: dict[str, str]):
+    def __init__(self, sessions, roots: dict[str, str], app_id: str):
         self.sessions = sessions
+        self.app_id = app_id
         self.roots = dict(roots)
         for area, root in self.roots.items():
-            if area not in {"updates", "resources"} or not root.startswith("/"):
+            if not re.fullmatch(r"[a-z][a-z0-9_]{1,31}", area) or not root.startswith("/"):
                 raise ValueError("Explicit application file roots required")
             relative_path(root[1:])
         self.capacity = asyncio.Semaphore(4)
@@ -94,7 +95,7 @@ class AccountFiles:
                     self.capacity.release()
 
         try:
-            context = await asyncio.to_thread(self.sessions.upstream_context, token)
+            context = await asyncio.to_thread(self.sessions.upstream_context, token, self.app_id)
             provider = self.sessions.provider
             client = provider.client()
             specs = await provider.call(
@@ -221,7 +222,7 @@ class AccountFiles:
                     if len(payload) > 128 * 1024:
                         raise HTTPException(503, "invalid_update_manifest")
             manifest = json.loads(payload)
-            if manifest.get("appId") != "zheri" or manifest.get("channel") != channel:
+            if manifest.get("appId") != self.app_id or manifest.get("channel") != channel:
                 raise ValueError()
             if type(manifest.get("buildNumber")) is not int or manifest["buildNumber"] <= 0:
                 raise ValueError()

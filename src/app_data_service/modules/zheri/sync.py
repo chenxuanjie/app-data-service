@@ -11,8 +11,10 @@ import sqlalchemy as sa
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import Connection
 
+from app_data_service.models import Dataset
+from app_data_service.modules.zheri.models import ExpenseConflict, MutationReceipt, SyncConflict
+
 from .entities import ENTITY_MODELS, EntityType, canonical_record, database_values
-from .models import Dataset, ExpenseConflict, MutationReceipt, SyncConflict
 from .record_merge import merge_record, row_record, same
 
 Identifier = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[^\x00]+$")]

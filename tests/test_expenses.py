@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from app_data_service.expenses import ExpenseImportPlan, amount_from_json
+from app_data_service.modules.zheri.expenses import ExpenseImportPlan, amount_from_json
 
 
 def expense_source(**changes):

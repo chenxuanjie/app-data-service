@@ -7,11 +7,12 @@ import 'package:uuid/uuid.dart';
 
 /// Probe only: the app token is minted by the local test runner, not DSM login.
 class ProbeConnector extends PowerSyncBackendConnector {
-  ProbeConnector(this.api, this.token, this.datasetId);
+  ProbeConnector(this.api, this.token, this.datasetId, {this.appId = 'zheri'});
 
   final Uri api;
   final String token;
   final String datasetId;
+  final String appId;
   final http.Client _http = http.Client();
   final List<Map<String, dynamic>> outcomes = [];
   bool simulateLostResponse = false;
@@ -34,6 +35,7 @@ class ProbeConnector extends PowerSyncBackendConnector {
     request.headers.addAll({
       'Authorization': 'Bearer $token',
       'Content-Type': 'application/json',
+      'X-App-ID': appId,
     });
     if (body != null) request.body = jsonEncode(body);
     try {

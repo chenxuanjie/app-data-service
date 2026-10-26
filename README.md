@@ -1,6 +1,13 @@
 # Flutter 应用数据服务
 
-源码版本 0.5.0：业务上传与冲突统一 v2，迁移 0008 原地收敛个人账本状态。与折日 0.14.0+66 配套，尚未部署。契约和升级见[当前同步说明](docs/current-sync.md)。
+当前功能分支 `feature/multi-app-foundation` 已实现多应用模块化基础，尚未构建新镜像或部署。
+公共账号、会话、权限和数据空间与各应用业务分离；Zheri 客户端不在本轮修改范围，桌游客户端尚未接入。
+源码包元数据仍为 0.5.0，尚未形成新发布版本。新增迁移 0010/0011 和应用配置需与 API 镜像、同步规则配套上线。
+
+- [架构与目录](docs/architecture.md)
+- [应用/API/部署契约](docs/application-scope.md)
+- [接入新应用](docs/adding-an-application.md)
+- [本地验证范围](docs/validation.md)
 
 此前版本新增[账号文件与更新 API](docs/account-files.md)及[同源浏览器会话](docs/browser-sessions.md)，尚未部署本轮源码。
 已验收的六类业务 0.3.0 见 [全业务接口与升级说明](docs/complete-business-sync.md)。
@@ -25,7 +32,7 @@
 `seed-demo` 只创建本地测试身份，不代表通过了 DSM 登录验证。
 Git 按 [Git Flow](docs/git-flow.md) 开发：`main` / `develop` / `feature/*`。
 PostgreSQL 基础已在 `feature/postgres-foundation` 提交并合入 `develop`；
-当前工作分支为 `feature/multi-entity-sync`，尚未创建生产发布版本。
+当前工作分支为 `feature/multi-app-foundation`，尚未创建生产发布版本。
 
 ## 本地开发
 

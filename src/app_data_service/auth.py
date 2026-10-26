@@ -8,6 +8,8 @@ import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
+from .applications import application_id
+
 API_AUDIENCE = "app-data-api"
 SYNC_AUDIENCE = "app-data-powersync"
 
@@ -33,24 +35,38 @@ class TokenAuthority:
         }
 
     def issue(
-        self, user_id: str, audience: str, *, seconds: int = 300, extra: dict | None = None
+        self,
+        user_id: str,
+        audience: str,
+        *,
+        app_id: str,
+        seconds: int = 300,
+        extra: dict | None = None,
     ) -> str:
         now = datetime.now(UTC)
         return jwt.encode(
             {
+                **(extra or {}),
                 "sub": user_id,
+                "app_id": application_id(app_id),
                 "iss": self.issuer,
                 "aud": audience,
                 "iat": now,
                 "exp": now + timedelta(seconds=seconds),
-                **(extra or {}),
             },
             self.key,
             algorithm="RS256",
             headers={"kid": self.kid},
         )
 
-    def claims(self, token: str, *, audience: str = API_AUDIENCE, maximum_age: int = 3600) -> dict:
+    def claims(
+        self,
+        token: str,
+        *,
+        audience: str = API_AUDIENCE,
+        maximum_age: int = 3600,
+        app_id: str | None = None,
+    ) -> dict:
         header = jwt.get_unverified_header(token)
         if header.get("kid") != self.kid:
             raise jwt.InvalidTokenError("Unknown signing key")
@@ -60,8 +76,14 @@ class TokenAuthority:
             algorithms=["RS256"],
             audience=audience,
             issuer=self.issuer,
-            options={"require": ["exp", "iat", "sub", "iss", "aud"], "strict_aud": True},
+            options={"require": ["exp", "iat", "sub", "iss", "aud", "app_id"], "strict_aud": True},
         )
+        try:
+            application_id(claims["app_id"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise jwt.InvalidTokenError("Unknown application") from error
+        if app_id is not None and claims["app_id"] != app_id:
+            raise jwt.InvalidTokenError("Wrong application")
         actor = claims["sub"]
         if not isinstance(actor, str) or not actor.strip() or len(actor) > 200 or "\x00" in actor:
             raise jwt.InvalidTokenError("Invalid subject")
@@ -71,5 +93,5 @@ class TokenAuthority:
             raise jwt.InvalidTokenError("Token lifetime exceeds one hour")
         return claims
 
-    def verify(self, token: str) -> str:
-        return self.claims(token)["sub"]
+    def verify(self, token: str, *, app_id: str) -> str:
+        return self.claims(token, app_id=app_id)["sub"]

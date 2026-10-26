@@ -1,6 +1,7 @@
 # 账号文件与更新 API（第二阶段）
 
-2026-10-22。源码版本 API 0.4.0，配套折日 0.13.0+64、app_client 0.2.0。
+2026-10-26 更新：本文中的 /v1 路由是 Zheri 当前模块接口；新应用使用 /v1/apps/<app_id> 前缀。
+文件和更新逻辑已按模块配置通用化，更新清单按当前应用校验。
 仅本地开发与验证；尚未打包或部署 NAS。原有 release 目录不是这次源码的交付物。
 
 ## 调用链
@@ -23,14 +24,11 @@
 
 ## 服务端配置
 
-在现有 API 服务 environment 中增加以下可选字段，保持原数据库 URL、密钥、身份命名空间不变：
+当前统一使用 `APP_DATA_APPLICATIONS`，保留原数据库 URL、密钥、身份命名空间与文件位置：
 
 ```yaml
-APP_DATA_UPDATES_ROOT: /YourShare/apps/zheri/updates
-# 仅需要资料读取时才配置：
-APP_DATA_RESOURCES_ROOT: /home/Apps/zheri
-# 浏览器登录必须与网页来源完全一致：
-APP_DATA_BROWSER_ORIGIN: https://your-web.example
+APP_DATA_APPLICATIONS: >-
+  {"zheri":{"browser_origin":"https://your-web.example","file_roots":{"updates":"/YourShare/apps/zheri/updates","resources":"/home/Apps/zheri"}}}
 ```
 
 路径是 **File Station API 可见的绝对路径**，不是容器挂载路径、WebDAV URL 或
@@ -39,9 +37,9 @@ APP_DATA_BROWSER_ORIGIN: https://your-web.example
 `/home/...` 由 DSM 按当前用户解释；公共更新目录则由 NAS ACL 决定谁可读取。
 不配置根目录时相应功能返回 503，不退回 WebDAV，也不影响业务同步。
 
-`tools/render_stack.py` 为新环境提供 `--updates-root`、`--resources-root`、`--browser-origin`。
+`tools/render_stack.py` 为新环境提供 `--applications <JSON文件>`。文件区域必须由应用模块声明。
 已有部署不要重新运行生成器覆盖私有凭据；之后正式交付时从原配置保留凭据并更新镜像和所需字段。
-本轮不新增数据库迁移或 PowerSync 规则；未部署第一阶段的环境首次升级仍需执行 0007 会话迁移。
+多应用改造需要升级至 0011、注册模块并更新生成的同步配置，见 [部署契约](application-scope.md)。
 
 Web 仍遵守同源 `/api/` 网关契约，转发时移除前缀，保留 Authorization、Cookie、Origin、
 X-CSRF-Token、Set-Cookie。文件下载还需保留 Range / Content-Range / Content-Length、

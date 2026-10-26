@@ -7,7 +7,6 @@ import re
 import secrets
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlsplit
 
 import jwt
 import sqlalchemy as sa
@@ -15,30 +14,17 @@ from cryptography.fernet import InvalidToken
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from .applications import application_id
+from .origins import browser_origin
 from .sessions import REFRESH_AUDIENCE, REFRESH_LIFETIME
-
-COOKIE = "__Host-app-session"
 
 
 class BrowserSessions:
-    def __init__(self, sessions, public_origin):
-        parsed = urlsplit(public_origin)
-        if (
-            parsed.scheme != "https"
-            and not (
-                parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-            )
-        ) or (
-            not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or parsed.path not in {"", "/"}
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("A fixed HTTPS browser origin is required")
+    def __init__(self, sessions, public_origin, app_id):
         self.sessions = sessions
-        self.origin = public_origin.rstrip("/")
+        self.app_id = application_id(app_id)
+        self.cookie = "__Host-app-session-" + app_id
+        self.origin = browser_origin(public_origin)
         # Domain-separated secret derived from the existing session encryption key.
         # A stable HMAC key across API restarts/replicas, never published.
         self.csrf_key = sessions.browser_csrf_key
@@ -49,15 +35,18 @@ class BrowserSessions:
         if request.headers.get("content-type", "").split(";")[0] != "application/json":
             raise HTTPException(415, "json_required")
 
-    @staticmethod
-    def identifier(request):
-        value = request.cookies.get(COOKIE, "")
+    def identifier(self, request):
+        value = request.cookies.get(self.cookie, "")
         if not re.fullmatch(r"[A-Za-z0-9_-]{43}", value):
             raise HTTPException(401, "session_rejected")
         return value
 
     def csrf(self, identifier):
-        return hmac.new(self.csrf_key, identifier.encode(), hashlib.sha256).hexdigest()
+        return hmac.new(
+            self.csrf_key,
+            (self.app_id + "|" + identifier).encode(),
+            hashlib.sha256,
+        ).hexdigest()
 
     def check(self, request):
         self.origin_check(request)
@@ -76,6 +65,9 @@ class BrowserSessions:
             c.exec_driver_sql("SET LOCAL transaction_timeout = '20s'")
             c.exec_driver_sql("SET LOCAL lock_timeout = '5s'")
             c.execute(sa.text("SELECT set_config('app.browser_id', :id, true)"), {"id": digest})
+            c.execute(
+                sa.text("SELECT set_config('app.app_id', :app_id, true)"), {"app_id": self.app_id}
+            )
             yield c, digest
 
     def bootstrap(self, request):
@@ -90,17 +82,17 @@ class BrowserSessions:
             with self.transaction(identifier) as (c, digest):
                 c.execute(
                     sa.text(
-                        "INSERT INTO core.browser_sessions(id_hash,expires_at) "
-                        "VALUES(:id,now()+interval '10 minutes')"
+                        "INSERT INTO core.browser_sessions(id_hash,app_id,expires_at) "
+                        "VALUES(:id,:app_id,now()+interval '10 minutes')"
                     ),
-                    {"id": digest},
+                    {"id": digest, "app_id": self.app_id},
                 )
         response = JSONResponse(
             {"csrf_token": self.csrf(identifier), "authenticated": authenticated},
             headers={"Cache-Control": "no-store"},
         )
         response.set_cookie(
-            COOKIE,
+            self.cookie,
             identifier,
             max_age=REFRESH_LIFETIME,
             secure=True,
@@ -141,6 +133,8 @@ class BrowserSessions:
             raise HTTPException(409, "session_busy")
 
     def finish_login(self, identifier, result):
+        if result.get("app_id") != self.app_id:
+            raise HTTPException(401, "session_rejected")
         encrypted = self.sessions.cipher.encrypt(result["refresh_token"].encode()).decode()
         with self.transaction(identifier) as (c, digest):
             found = c.execute(
@@ -183,7 +177,7 @@ class BrowserSessions:
         identifier = self.check(request)
         token = await asyncio.to_thread(self.refresh_token, identifier)
         async with asyncio.timeout(15):
-            result = await self.sessions.refresh(token)
+            result = await self.sessions.refresh(token, self.app_id)
         # Concurrent logout must also invalidate a response already in flight.
         await asyncio.to_thread(self.record, identifier)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
@@ -202,11 +196,14 @@ class BrowserSessions:
                 try:
                     token = self.sessions.cipher.decrypt(encrypted.encode()).decode()
                     claims = self.sessions.authority.claims(
-                        token, audience=REFRESH_AUDIENCE, maximum_age=REFRESH_LIFETIME
+                        token,
+                        audience=REFRESH_AUDIENCE,
+                        maximum_age=REFRESH_LIFETIME,
+                        app_id=self.app_id,
                     )
                     # Revoke the app session before discarding the only server
                     # credential; on DB failure this browser transaction rolls back.
-                    context = self.sessions.revoke(claims["sub"], claims["session_id"])
+                    context = self.sessions.revoke(claims["sub"], claims["session_id"], self.app_id)
                 except (jwt.InvalidTokenError, InvalidToken):
                     pass
             c.execute(
@@ -224,5 +221,5 @@ class BrowserSessions:
         if context:
             await self.sessions.provider.logout(context)
         response = JSONResponse({"revoked": True}, headers={"Cache-Control": "no-store"})
-        response.delete_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="strict")
+        response.delete_cookie(self.cookie, path="/", secure=True, httponly=True, samesite="strict")
         return response

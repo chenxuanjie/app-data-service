@@ -3,18 +3,13 @@
 import argparse
 import json
 import os
-from dataclasses import asdict
-from decimal import Decimal
 from pathlib import Path
 
-import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 from sqlalchemy.exc import DBAPIError
 
 from app_data_service.config import database_url, make_engine
-from app_data_service.expenses import ExpenseImportPlan
-from app_data_service.store import import_expenses, user_transaction
 
 ROOT = Path(os.environ.get("APP_DATA_PROJECT_ROOT", Path(__file__).resolve().parents[2])).resolve()
 
@@ -41,42 +36,7 @@ def migrate(url: str) -> None:
             os.environ["APP_DATA_DATABASE_URL"] = previous
 
 
-def source_plan(path: Path) -> ExpenseImportPlan:
-    if path.stat().st_size > 8 * 1024 * 1024:
-        raise ValueError("Expense source exceeds 8 MiB")
-    return ExpenseImportPlan.from_json(
-        json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
-    )
-
-
-def seed_demo(url: str) -> None:
-    engine = make_engine(url)
-    try:
-        with engine.begin() as connection:
-            connection.execute(
-                sa.text(
-                    "INSERT INTO core.users(id, display_name) VALUES ('dev-alice', '本地测试账号') "
-                    "ON CONFLICT (id) DO NOTHING"
-                )
-            )
-            connection.execute(
-                sa.text(
-                    "INSERT INTO core.datasets(id, app_id, owner_id, name) "
-                    "VALUES ('dev-zheri', 'zheri', 'dev-alice', '本地测试数据') "
-                    "ON CONFLICT (id) DO NOTHING"
-                )
-            )
-            connection.execute(
-                sa.text(
-                    "INSERT INTO core.dataset_members(dataset_id,user_id) "
-                    "VALUES ('dev-zheri','dev-alice') ON CONFLICT DO NOTHING"
-                )
-            )
-    finally:
-        engine.dispose()
-
-
-def inspect_database(url: str) -> dict:
+def inspect_database(url: str, *, applications=None) -> dict:
     engine = make_engine(url)
     try:
         with engine.connect() as connection:
@@ -93,16 +53,10 @@ def inspect_database(url: str) -> dict:
                 .scalars()
                 .all()
             )
-            expected = [
-                "core.dataset_members",
-                "core.datasets",
-                "zheri.asset_allocations",
-                "zheri.assets",
-                "zheri.business_preferences",
-                "zheri.expense_categories",
-                "zheri.expenses",
-                "zheri.payroll_records",
-            ]
+            from .modules.registry import installed_applications
+
+            applications = applications or installed_applications()
+            expected = applications.publication_tables
             if wal != "logical" or publication != expected:
                 raise ValueError("PowerSync prerequisite configuration is incomplete")
             return {
@@ -121,47 +75,44 @@ def main() -> None:
     parser.add_argument("--local", action="store_true", help="Use the ignored local dev profile")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("migrate")
+    commands.add_parser(
+        "register-applications", help="Register installed modules after schema migrations"
+    )
     commands.add_parser("check")
-    commands.add_parser("seed-demo", help="Local-only fixture; not a verified NAS identity")
-    preview = commands.add_parser("preview-expenses")
-    preview.add_argument("source", type=Path)
-    apply = commands.add_parser("import-expenses")
-    apply.add_argument("source", type=Path)
-    apply.add_argument("--user-id", required=True)
-    apply.add_argument("--dataset-id", required=True)
+    from .modules.registry import installed_applications
+
+    registry = installed_applications()
+    for definition in registry.definitions:
+        if definition.cli_factory:
+            definition.cli_factory(commands)
     args = parser.parse_args()
     try:
-        if args.command == "preview-expenses":
-            plan = source_plan(args.source)
-            output = {
-                "count": len(plan.records),
-                "source_hash": plan.source_hash,
-                "amount_sum": format(sum((r.amount for r in plan.records), Decimal(0)), "f"),
-                "writes": False,
-            }
+        urls = None
+        if getattr(args, "needs_database", True):
+            urls = (
+                local_config()["urls"]
+                if args.local
+                else {"migrator": database_url(), "runtime": database_url()}
+            )
+        if hasattr(args, "handler"):
+            output = args.handler(args, urls)
+        elif args.command == "migrate":
+            migrate(urls["migrator"])
+            output = {"migration": "head", "completed": True}
+        elif args.command == "register-applications":
+            from .registration import register_application
+
+            engine = make_engine(urls["migrator"])
+            try:
+                with engine.begin() as connection:
+                    connection.exec_driver_sql("SET LOCAL transaction_timeout = '20s'")
+                    for definition in registry.definitions:
+                        register_application(connection, definition)
+                output = {"registered": [d.id for d in registry.definitions]}
+            finally:
+                engine.dispose()
         else:
-            urls = local_config()["urls"] if args.local else None
-            migrator_url = urls["migrator"] if urls else database_url()
-            if args.command == "migrate":
-                migrate(migrator_url)
-                output = {"migration": "head", "completed": True}
-            elif args.command == "check":
-                output = inspect_database(migrator_url)
-            elif args.command == "seed-demo":
-                if not args.local:
-                    raise ValueError("seed-demo requires --local and cannot target another profile")
-                seed_demo(migrator_url)
-                output = {"user_id": "dev-alice", "dataset_id": "dev-zheri", "verified_nas": False}
-            else:
-                runtime_url = urls["runtime"] if urls else database_url()
-                plan = source_plan(args.source)
-                engine = make_engine(runtime_url)
-                try:
-                    with user_transaction(engine, args.user_id) as connection:
-                        result = import_expenses(connection, args.dataset_id, plan)
-                    output = asdict(result)
-                finally:
-                    engine.dispose()
+            output = inspect_database(urls["migrator"], applications=registry)
         print(json.dumps(output, ensure_ascii=False))
     except DBAPIError as error:
         state = getattr(error.orig, "sqlstate", "unknown")

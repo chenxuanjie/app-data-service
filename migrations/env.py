@@ -5,6 +5,10 @@ from sqlalchemy import text
 
 from app_data_service.config import database_url, make_engine
 from app_data_service.models import Base
+from app_data_service.modules.registry import installed_applications
+
+# Load installed modules' model metadata before migration inspection.
+installed_applications()
 
 if context.is_offline_mode():
     raise RuntimeError("Offline SQL generation is not enabled; use the PostgreSQL migration runner")

@@ -1,9 +1,19 @@
 import base64
 import importlib
+import json
 from pathlib import Path
 
 import yaml
 from sqlalchemy.engine import make_url
+
+
+def test_development_stream_config_matches_installed_modules():
+    from app_data_service.modules.registry import installed_applications
+
+    path = Path(__file__).resolve().parents[1] / "deploy/powersync/sync-config.yaml"
+    assert (
+        yaml.safe_load(path.read_text(encoding="utf-8")) == installed_applications().sync_config()
+    )
 
 
 def test_full_synology_stack_has_private_database_and_stable_identity(monkeypatch):
@@ -52,14 +62,20 @@ def test_optional_account_file_roots_and_browser_gateway_are_explicit(monkeypatc
         "/volume1/test/data",
         "https://data.test",
         "https://nas.test:5001",
-        browser_origin="https://web.test",
-        updates_root="/apps/zheri/updates",
-        resources_root="/home/Apps/zheri",
+        application_settings={
+            "zheri": {
+                "browser_origin": "https://web.test",
+                "file_roots": {"updates": "/apps/zheri/updates", "resources": "/home/Apps/zheri"},
+            }
+        },
     )
     env = config["services"]["api"]["environment"]
-    assert env["APP_DATA_BROWSER_ORIGIN"] == "https://web.test"
-    assert env["APP_DATA_UPDATES_ROOT"] == "/apps/zheri/updates"
-    assert env["APP_DATA_RESOURCES_ROOT"] == "/home/Apps/zheri"
+    settings = json.loads(env["APP_DATA_APPLICATIONS"])["zheri"]
+    assert settings["browser_origin"] == "https://web.test"
+    assert settings["file_roots"] == {
+        "updates": "/apps/zheri/updates",
+        "resources": "/home/Apps/zheri",
+    }
     assert set(config["services"]) == {"api", "postgres", "powersync"}
 
 

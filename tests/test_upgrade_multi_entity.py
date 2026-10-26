@@ -12,10 +12,10 @@ from sqlalchemy.engine import make_url
 
 from app_data_service.cli import ROOT, migrate
 from app_data_service.config import make_engine
-from app_data_service.expenses import ExpenseRecord
-from app_data_service.models import Expense
+from app_data_service.modules.zheri.expenses import ExpenseRecord
+from app_data_service.modules.zheri.models import Expense
+from app_data_service.modules.zheri.sync import ReplayError, Upload, apply_upload
 from app_data_service.store import user_transaction
-from app_data_service.sync import ReplayError, Upload, apply_upload
 
 
 def test_upgrade_preserves_v1_receipts_records_and_unresolved_conflicts(db, monkeypatch):
@@ -108,10 +108,10 @@ def test_upgrade_preserves_v1_receipts_records_and_unresolved_conflicts(db, monk
                 {"id": conflict_id, "candidate": json.dumps(source)},
             )
         migrate(urls["migrator"])
-        with user_transaction(runtime, "legacy-user") as c:
+        with user_transaction(runtime, "legacy-user", app_id="zheri") as c:
             assert apply_upload(c, "legacy-user", upload) == {"results": [result]}
             receipt = c.execute(
-                sa.text("SELECT payload_hash,entity_type FROM core.mutation_receipts")
+                sa.text("SELECT payload_hash,entity_type FROM zheri.mutation_receipts")
             ).one()
             assert tuple(receipt) == (digest, "expenses")
             assert (
@@ -136,7 +136,10 @@ def test_upgrade_preserves_v1_receipts_records_and_unresolved_conflicts(db, monk
             )
         changed = upload.model_copy(deep=True)
         changed.mutations[0].record["name"] = "不同内容"
-        with pytest.raises(ReplayError), user_transaction(runtime, "legacy-user") as c:
+        with (
+            pytest.raises(ReplayError),
+            user_transaction(runtime, "legacy-user", app_id="zheri") as c,
+        ):
             apply_upload(c, "legacy-user", changed)
     finally:
         for engine in engines:

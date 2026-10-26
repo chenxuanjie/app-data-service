@@ -10,11 +10,12 @@ from urllib.parse import urlsplit
 import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from render_sync_config import render as render_sync_config
 from render_synology import compose
 from sqlalchemy.engine import URL
 
 from app_data_service.dsm import DsmProvider
-from app_data_service.files import relative_path
+from app_data_service.modules.registry import installed_applications
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,6 +26,7 @@ def api_start_command():
         "/bin/sh",
         "-ec",
         'APP_DATA_DATABASE_URL="$$APP_DATA_MIGRATION_URL" app-data migrate\n'
+        'APP_DATA_DATABASE_URL="$$APP_DATA_MIGRATION_URL" app-data register-applications\n'
         "unset APP_DATA_MIGRATION_URL\n"
         "exec python -m uvicorn app_data_service.api:from_environment --factory "
         "--host 0.0.0.0 --port 8000 --no-access-log --no-proxy-headers",
@@ -42,9 +44,7 @@ def stack(
     secrets_bundle=None,
     dsm_identity_origin=None,
     dsm_lan_ip=None,
-    browser_origin=None,
-    updates_root=None,
-    resources_root=None,
+    application_settings=None,
 ):
     parsed = urlsplit(origin)
     if (
@@ -103,15 +103,9 @@ REVOKE ALL ON DATABASE powersync_storage FROM PUBLIC;
         "APP_DATA_POWERSYNC_UPSTREAM": "http://powersync:8080",
         "APP_DATA_ALLOWED_ORIGINS": allowed_origins,
     }
-    if browser_origin:
-        DsmProvider.validate_origin(browser_origin)
-        environment["APP_DATA_BROWSER_ORIGIN"] = browser_origin.rstrip("/")
-    for area, root in (("UPDATES", updates_root), ("RESOURCES", resources_root)):
-        if root is not None:
-            if not root.startswith("/"):
-                raise ValueError("Absolute File Station root required")
-            relative_path(root[1:])
-            environment[f"APP_DATA_{area}_ROOT"] = root
+    registry = installed_applications()
+    settings = registry.validate_settings(application_settings or {})
+    environment["APP_DATA_APPLICATIONS"] = json.dumps(settings, ensure_ascii=False)
     configuration["services"]["api"] = {
         "image": api_image,
         "command": api_start_command(),
@@ -162,10 +156,7 @@ REVOKE ALL ON DATABASE powersync_storage FROM PUBLIC;
     powersync = powersync.replace(
         "  path: sync-config.yaml",
         "  content: |\n"
-        + "\n".join(
-            "    " + line
-            for line in (ROOT / "deploy/powersync/sync-config.yaml").read_text().splitlines()
-        ),
+        + "\n".join("    " + line for line in render_sync_config(registry).splitlines()),
     )
     configuration["services"]["powersync"] = {
         "image": "journeyapps/powersync-service:1.27.0",
@@ -204,9 +195,7 @@ def main():
     parser.add_argument("--allowed-origins", default="")
     parser.add_argument("--dsm-identity-origin")
     parser.add_argument("--dsm-lan-ip")
-    parser.add_argument("--browser-origin")
-    parser.add_argument("--updates-root")
-    parser.add_argument("--resources-root")
+    parser.add_argument("--applications", type=Path, help="Application settings JSON file")
     parser.add_argument("--output", type=Path, default=ROOT / "deploy/compose.synology-test.yaml")
     args = parser.parse_args()
     if args.output.exists():
@@ -220,9 +209,9 @@ def main():
         allowed_origins=args.allowed_origins,
         dsm_identity_origin=args.dsm_identity_origin,
         dsm_lan_ip=args.dsm_lan_ip,
-        browser_origin=args.browser_origin,
-        updates_root=args.updates_root,
-        resources_root=args.resources_root,
+        application_settings=json.loads(args.applications.read_text(encoding="utf-8"))
+        if args.applications
+        else {},
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as file:

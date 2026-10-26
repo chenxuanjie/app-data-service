@@ -34,7 +34,9 @@ def db():
         by_role = {role: make_engine(url) for role, url in test_urls.items()}
         engines.extend(by_role.values())
         with by_role["migrator"].begin() as connection:
-            connection.execute(sa.insert(App).values(id="other", name="其他测试应用"))
+            connection.execute(
+                sa.insert(App).values(id="other", name="其他测试应用", schema_name="other")
+            )
             connection.execute(
                 sa.insert(User),
                 [{"id": "alice", "display_name": "甲"}, {"id": "bob", "display_name": "乙"}],

@@ -8,9 +8,9 @@ from test_multi_entity import client as client
 from test_multi_entity import record
 from test_multi_entity import upload as send_upload
 
-from app_data_service.entities import ENTITY_MODELS, canonical_record
 from app_data_service.models import Dataset, DatasetMember
-from app_data_service.record_merge import row_record
+from app_data_service.modules.zheri.entities import ENTITY_MODELS, canonical_record
+from app_data_service.modules.zheri.record_merge import row_record
 from app_data_service.store import user_transaction
 
 
@@ -72,7 +72,7 @@ def put(entity, edited, base=None, version=0, **extra):
 
 
 def current(db, entity, id):
-    with user_transaction(db.runtime, "alice") as c:
+    with user_transaction(db.runtime, "alice", app_id="zheri") as c:
         row = (
             c.execute(sa.select(ENTITY_MODELS[entity]).where(ENTITY_MODELS[entity].id == id))
             .mappings()

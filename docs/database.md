@@ -1,17 +1,20 @@
 # 数据与同步边界
 
-当前只实现固定支出最小数据模型，其余折日业务在下一阶段逐项加入。
+当前公共模型覆盖多应用账号、数据空间与会话；Zheri 模块包含六类业务。
+结构和扩展流程见 [架构](architecture.md) 与 [接入应用](adding-an-application.md)。
 
 | 表 | 主键 / 责任 |
 | --- | --- |
-| core.apps | 应用标识 |
-| core.users | 稳定应用用户 ID；没有密码 |
+| core.apps | 应用、schema、启用状态和个人数据空间元数据 |
+| core.users | 跨应用稳定账号身份；没有密码 |
 | core.datasets | 归属账号与应用的数据集 |
-| core.dataset_members | 用户与数据集的授权关系，首版仅使用个人数据 |
+| core.dataset_members | 用户与数据集的授权关系 |
+| core.personal_spaces | 每个应用/账号的主个人空间映射，复合外键验证所属应用与所有者 |
+| core.browser_sessions | 应用隔离的匿名/登录浏览器会话，刷新凭据只存密文 |
 | zheri.expenses | 全表唯一 text id，保留已有固定支出 ID |
-| core.import_batches | 数据集与规范化来源哈希唯一，避免重复导入 |
-| core.import_records | 来源 ID 到目标 ID 的可追溯映射，限定同一数据集 |
-| core.mutation_receipts | 用户/客户端/修改 UUID 主键，保存提交结果和内容哈希 |
+| zheri.import_batches | 数据集与规范化来源哈希唯一，避免重复导入 |
+| zheri.import_records | 来源 ID 到目标 ID 的可追溯映射，限定同一数据集 |
+| zheri.mutation_receipts | 用户/客户端/修改 UUID 主键，保存提交结果和内容哈希 |
 | core.app_sessions | 用户作用域内的会话、刷新令牌哈希、加密 DSM 会话和撤销状态，不参与复制 |
 | zheri.expense_conflicts | 冲突候选、当时服务器版本、选择结果，按用户和数据集隔离 |
 
@@ -39,7 +42,7 @@
 ## 权限与事务
 
 运行连接使用 app_runtime。服务端验证用户后，在同一个事务内使用
-`set_config('app.user_id', user_id, true)`，RLS 按成员关系和应用限定访问。
+`app.user_id` 与 `app.app_id` 的事务局部设置，RLS 按成员关系、应用和启用状态限定访问。
 连接池返回后事务内身份会清除，无身份时读不到私有记录。
 这不是身份验证接口：数据库运行凭据必须只留在可信服务端。
 

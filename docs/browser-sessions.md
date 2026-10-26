@@ -1,6 +1,7 @@
 # 同源浏览器会话（重构第一阶段）
 
-2026-10-22，功能分支源码，尚未构建或部署到 NAS。整体进度见
+2026-10-26 更新：下表中的 /v1 路由是 Zheri 当前模块接口；新应用使用 /v1/apps/<app_id> 前缀。
+无应用签名的旧凭据不再接受，更新后可能需要重新登录一次。整体进度见
 [折日统一应用服务重构](../../../zheri/docs/unified-service-refactor.md)。
 
 迁移 `0007_browser_sessions` 只新增 core.browser_sessions，业务表及账号/账本 ID 不改变。
@@ -14,11 +15,11 @@
 | POST /v1/auth/browser/restore | 恢复 Cookie 会话、核验 DSM，返回短期访问令牌和用户标识 |
 | POST /v1/auth/browser/logout | 先撤销浏览器会话，再撤销对应应用会话与 DSM 会话 |
 
-只有配置 APP_DATA_BROWSER_ORIGIN 才启用浏览器会话。网页和 /api/ 同源，网关转发时移除 /api 前缀，
+当前每个应用在 APP_DATA_APPLICATIONS 中配置 browser_origin 才启用浏览器会话，见 [当前契约](application-scope.md)。网页和 /api/ 同源，网关转发时移除 /api 前缀，
 保留 Origin、Content-Type、X-CSRF-Token、Cookie、Set-Cookie；不得缓存认证响应。
 FastAPI 不信任任意 X-Forwarded-* 或请求提供的 NAS 上游。
 
-Cookie 使用 Secure/HttpOnly/SameSite=Strict/Path=/，不设置 Domain；生产必须 HTTPS。
+Cookie 名为 __Host-app-session-<app_id>，CSRF 绑定应用。Cookie 使用 Secure/HttpOnly/SameSite=Strict/Path=/，不设置 Domain；生产必须 HTTPS。
 CSRF token 使用服务器稳定密钥对随机 Cookie ID 的 HMAC，只通过同源响应交给页面内存。
 数据库按 Cookie 哈希启用 RLS，刷新令牌密文保存。匿名十分钟、登录三十天过期，访问令牌十五分钟。
 bootstrap 与登录有有界频率/并发限制，所有数据库事务、锁和 DSM 请求有超时。

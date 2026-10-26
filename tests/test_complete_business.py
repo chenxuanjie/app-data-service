@@ -9,9 +9,10 @@ from test_multi_entity import client as client
 from test_multi_entity import upload
 
 from app_data_service.auth import API_AUDIENCE
-from app_data_service.business_documents import validate_document
-from app_data_service.entities import ENTITY_MODELS, database_values
-from app_data_service.models import BusinessPreference, Dataset, DatasetMember, SyncConflict, User
+from app_data_service.models import Dataset, DatasetMember, User
+from app_data_service.modules.zheri.business_documents import validate_document
+from app_data_service.modules.zheri.entities import ENTITY_MODELS, database_values
+from app_data_service.modules.zheri.models import BusinessPreference, SyncConflict
 from app_data_service.store import user_transaction
 
 
@@ -89,7 +90,9 @@ def workspace(client, db):
             sa.insert(Dataset).values(id=dataset, owner_id=actor, app_id="zheri", name="测试账本")
         )
         c.execute(sa.insert(DatasetMember).values(dataset_id=dataset, user_id=actor))
-    client.headers["Authorization"] = "Bearer " + client.authority.issue(actor, API_AUDIENCE)
+    client.headers["Authorization"] = "Bearer " + client.authority.issue(
+        actor, API_AUDIENCE, app_id="zheri"
+    )
     return client, actor, dataset
 
 
@@ -106,7 +109,7 @@ def test_complete_entities_roundtrip_conflict_resolution_delete_and_isolation(
     assert (
         upload(client, first, dataset=dataset, client_id=str(uuid4())).status_code == 200
     )  # distinct client -> conflict
-    with user_transaction(db.runtime, actor) as c:
+    with user_transaction(db.runtime, actor, app_id="zheri") as c:
         row = (
             c.execute(
                 sa.select(ENTITY_MODELS[entity]).where(ENTITY_MODELS[entity].id == value["id"])
@@ -133,7 +136,7 @@ def test_complete_entities_roundtrip_conflict_resolution_delete_and_isolation(
     assert client.post(f"/v2/conflicts/{conflict_id}/resolve", json=resolution).status_code == 200
     deletion = {**mutation(entity, changed, version=2), "kind": "delete", "record": None}
     assert upload(client, deletion, dataset=dataset).status_code == 200
-    with user_transaction(db.runtime, "bob") as c:
+    with user_transaction(db.runtime, "bob", app_id="zheri") as c:
         assert (
             c.execute(
                 sa.select(ENTITY_MODELS[entity]).where(ENTITY_MODELS[entity].id == value["id"])
@@ -141,14 +144,14 @@ def test_complete_entities_roundtrip_conflict_resolution_delete_and_isolation(
             is None
         )
     with pytest.raises(DBAPIError):
-        with user_transaction(db.runtime, actor) as c:
+        with user_transaction(db.runtime, actor, app_id="zheri") as c:
             c.execute(
                 sa.insert(ENTITY_MODELS[entity]).values(
                     **database_values(entity, sample(entity), "other-data")
                 )
             )
     with pytest.raises(DBAPIError):
-        with user_transaction(db.runtime, actor) as c:
+        with user_transaction(db.runtime, actor, app_id="zheri") as c:
             c.execute(
                 sa.delete(ENTITY_MODELS[entity]).where(ENTITY_MODELS[entity].id == value["id"])
             )
@@ -177,7 +180,7 @@ def test_reject_invalid_documents_in_api_and_direct_postgres(workspace, db, enti
         value["payload"][field] = {"precision": "0.0000001", "negative": "-1", "numeric": 1}[bad]
     assert upload(client, mutation(entity, value), dataset=dataset).status_code == 422
     with pytest.raises(DBAPIError):
-        with user_transaction(db.runtime, actor) as c:
+        with user_transaction(db.runtime, actor, app_id="zheri") as c:
             c.execute(
                 sa.insert(ENTITY_MODELS[entity]).values(**database_values(entity, value, dataset))
             )
@@ -190,7 +193,9 @@ def test_personal_dataset_replay_and_cross_account_isolation(workspace, db):
     response = upload(client, msg, dataset=dataset, client_id=client_id).json()
     assert upload(client, msg, dataset=dataset, client_id=client_id).json() == response
     assert client.get("/v1/datasets").json()["datasets"][0]["kind"] == "personal"
-    client.headers["Authorization"] = "Bearer " + client.authority.issue("bob", API_AUDIENCE)
+    client.headers["Authorization"] = "Bearer " + client.authority.issue(
+        "bob", API_AUDIENCE, app_id="zheri"
+    )
     assert upload(client, msg, dataset=dataset, client_id=client_id).status_code == 404
 
 
@@ -246,7 +251,7 @@ def test_automatic_preference_uses_edit_time_not_upload_order(workspace, db, nam
     assert response.status_code == 200
     assert response.json()["results"][0]["status"] == "applied"
     assert upload(client, second, dataset=dataset, client_id=client_id).json() == response.json()
-    with user_transaction(db.runtime, actor) as c:
+    with user_transaction(db.runtime, actor, app_id="zheri") as c:
         row = (
             c.execute(sa.select(BusinessPreference).where(BusinessPreference.id == identifier))
             .mappings()
@@ -279,7 +284,7 @@ def test_unknown_and_equal_preference_times_keep_current_value(workspace, db):
         assert (
             upload(client, candidate, dataset=dataset).json()["results"][0]["status"] == "applied"
         )
-    with user_transaction(db.runtime, actor) as c:
+    with user_transaction(db.runtime, actor, app_id="zheri") as c:
         row = (
             c.execute(sa.select(BusinessPreference).where(BusinessPreference.id == value["id"]))
             .mappings()
@@ -295,5 +300,7 @@ def test_preference_edit_time_rejects_clock_errors_and_cross_account_upload(work
     for edited in ["2026-10-23T12:00:00", (datetime.now(UTC) + timedelta(days=1)).isoformat()]:
         assert upload(client, {**message, "edited_at": edited}, dataset=dataset).status_code == 422
     message["edited_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-    client.headers["Authorization"] = "Bearer " + client.authority.issue("bob", API_AUDIENCE)
+    client.headers["Authorization"] = "Bearer " + client.authority.issue(
+        "bob", API_AUDIENCE, app_id="zheri"
+    )
     assert upload(client, message, dataset=dataset).status_code == 404

@@ -1,5 +1,31 @@
 # 验证状态
 
+2026-10-26 多应用模块化收尾验证：
+
+- ruff check、ruff format --check 通过；完整 **243 项 pytest** 通过，无跳过数据库测试，使用真实 PostgreSQL 17 随机隔离测试库。
+- app_client 格式、flutter analyze 与完整 **39 项测试** 通过。
+- PowerSync 1.27.0 真实 NDJSON 检查 **8 项**通过，含第三应用自身下载、跨应用主动订阅拒绝及跨账号隔离。
+- 第三“阅读笔记”测试模块覆盖独立业务表/读写、共同身份、独立空间、Cookie/CSRF、文件、更新清单及退出。
+- 覆盖模块禁用、错误路由绑定、元数据不一致、并发幂等注册和不需要个人数据的应用。
+- 旧数据库升级覆盖主数据集 ID、会话密文、业务记录、回执哈希与重试去重保留；回执表原地归入 zheri schema。
+
+临时数据库、容器、角色与复制槽已清理。测试保留一条 Starlette TestClient/httpx 弃用警告。
+未修改 Zheri 客户端、真实 NAS、生产数据或权限；未推送、构建交付镜像、上传或部署。
+2026-10-26 阶段 0 提交前复审：ruff check/format、243 项真实 PostgreSQL 测试及 app_client 分析/39 项测试再次通过。
+桌游三端尚未接入新后端。新架构、扩展步骤和上线条件见 [架构](architecture.md)、
+[新增应用](adding-an-application.md)、[应用契约](application-scope.md)。
+
+下文为历史阶段记录，包含后来已移除的无应用签名令牌兼容行为，不代表当前协议。
+
+2026-10-24 多应用基础：ruff check、ruff format --check、完整 233 项 pytest 通过，
+数据库使用真实 PostgreSQL 17 的随机隔离测试库。包含同账号跨应用 RLS、独立刷新/退出、
+浏览器 Cookie/CSRF、既有 Zheri 无应用头与历史令牌、0009 → 0010 的原地升级。
+app_client 分析及 39 项测试通过。PowerSync 1.27.0 真实 NDJSON 下载验证 5 项通过，
+包含伪造应用参数与主动订阅拒绝越界；测试临时数据库、容器、复制槽已清理。
+本轮对 Zheri 源码的试验性改动已全部撤回，其他任务改动原样保留，未将其列为本轮实现。
+仍有一条 Starlette TestClient/httpx 弃用警告。
+未修改 NAS、生产数据或权限，未提交、打包交付、上传或部署；桌游三端尚未接入新协议。
+
 > 下文保留早期阶段记录。已验收业务版本为 API 0.3.0，见 [全业务同步](complete-business-sync.md)。当前功能分支源码为 0.5.0，统一业务协议，见[当前同步契约](current-sync.md)，尚未打包或部署 NAS。
 
 2026-10-22 残留清理：ruff check / format --check、完整 193 项真实 PostgreSQL 测试、

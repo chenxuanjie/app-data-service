@@ -4,55 +4,37 @@ config:
 streams:
   private_expenses:
     auto_subscribe: true
-    query: |
-      SELECT expenses.* FROM zheri.expenses
-      WHERE deleted_at IS NULL AND dataset_id IN (
-        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
-          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
-        )
-      )
+    query: "SELECT expenses.* FROM zheri.expenses\nWHERE deleted_at IS NULL AND dataset_id\
+      \ IN (\n  SELECT id FROM core.datasets WHERE app_id = auth.parameter('app_id')\
+      \ AND app_id = 'zheri' AND id IN (\n    SELECT dataset_id FROM core.dataset_members\
+      \ WHERE user_id = auth.user_id()\n  )\n)\n"
   private_assets:
     auto_subscribe: true
-    query: |
-      SELECT assets.* FROM zheri.assets
-      WHERE deleted_at IS NULL AND dataset_id IN (
-        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
-          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
-        )
-      )
+    query: "SELECT assets.* FROM zheri.assets\nWHERE deleted_at IS NULL AND dataset_id\
+      \ IN (\n  SELECT id FROM core.datasets WHERE app_id = auth.parameter('app_id')\
+      \ AND app_id = 'zheri' AND id IN (\n    SELECT dataset_id FROM core.dataset_members\
+      \ WHERE user_id = auth.user_id()\n  )\n)\n"
   private_expense_categories:
     auto_subscribe: true
-    query: |
-      SELECT expense_categories.* FROM zheri.expense_categories
-      WHERE deleted_at IS NULL AND dataset_id IN (
-        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
-          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
-        )
-      )
+    query: "SELECT expense_categories.* FROM zheri.expense_categories\nWHERE deleted_at\
+      \ IS NULL AND dataset_id IN (\n  SELECT id FROM core.datasets WHERE app_id =\
+      \ auth.parameter('app_id') AND app_id = 'zheri' AND id IN (\n    SELECT dataset_id\
+      \ FROM core.dataset_members WHERE user_id = auth.user_id()\n  )\n)\n"
   private_payroll_records:
     auto_subscribe: true
-    query: |
-      SELECT payroll_records.* FROM zheri.payroll_records
-      WHERE deleted_at IS NULL AND dataset_id IN (
-        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
-          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
-        )
-      )
+    query: "SELECT payroll_records.* FROM zheri.payroll_records\nWHERE deleted_at\
+      \ IS NULL AND dataset_id IN (\n  SELECT id FROM core.datasets WHERE app_id =\
+      \ auth.parameter('app_id') AND app_id = 'zheri' AND id IN (\n    SELECT dataset_id\
+      \ FROM core.dataset_members WHERE user_id = auth.user_id()\n  )\n)\n"
   private_asset_allocations:
     auto_subscribe: true
-    query: |
-      SELECT asset_allocations.* FROM zheri.asset_allocations
-      WHERE deleted_at IS NULL AND dataset_id IN (
-        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
-          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
-        )
-      )
+    query: "SELECT asset_allocations.* FROM zheri.asset_allocations\nWHERE deleted_at\
+      \ IS NULL AND dataset_id IN (\n  SELECT id FROM core.datasets WHERE app_id =\
+      \ auth.parameter('app_id') AND app_id = 'zheri' AND id IN (\n    SELECT dataset_id\
+      \ FROM core.dataset_members WHERE user_id = auth.user_id()\n  )\n)\n"
   private_business_preferences:
     auto_subscribe: true
-    query: |
-      SELECT business_preferences.* FROM zheri.business_preferences
-      WHERE deleted_at IS NULL AND dataset_id IN (
-        SELECT id FROM core.datasets WHERE app_id = 'zheri' AND id IN (
-          SELECT dataset_id FROM core.dataset_members WHERE user_id = auth.user_id()
-        )
-      )
+    query: "SELECT business_preferences.* FROM zheri.business_preferences\nWHERE deleted_at\
+      \ IS NULL AND dataset_id IN (\n  SELECT id FROM core.datasets WHERE app_id =\
+      \ auth.parameter('app_id') AND app_id = 'zheri' AND id IN (\n    SELECT dataset_id\
+      \ FROM core.dataset_members WHERE user_id = auth.user_id()\n  )\n)\n"

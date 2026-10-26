@@ -88,7 +88,8 @@ def authenticated(db):
     )
     manager = SessionManager(db.runtime, authority, provider, private)
     with TestClient(
-        create_app(db.runtime, authority, "https://data.test/powersync", sessions=manager)
+        create_app(db.runtime, authority, "https://data.test/powersync", sessions=manager),
+        headers={"X-App-ID": "zheri"},
     ) as client:
         yield client, fixture, authority, manager
 
@@ -115,7 +116,7 @@ def test_verified_uid_provisions_same_personal_dataset_and_private_session(authe
         "datasets": [{"id": a["dataset_id"], "name": "个人账本", "kind": "personal"}]
     }
     assert client.post("/v1/sync/credentials").status_code == 200
-    with user_transaction(db.runtime, expected) as c:
+    with user_transaction(db.runtime, expected, app_id="zheri") as c:
         row = (
             c.execute(sa.select(AppSession).where(AppSession.user_id == expected))
             .mappings()
@@ -123,13 +124,15 @@ def test_verified_uid_provisions_same_personal_dataset_and_private_session(authe
         )
         assert "fixture-sid" not in row["dsm_context"]
         assert a["refresh_token"] != row["refresh_hash"]
-    with user_transaction(db.runtime, b["user_id"]) as c:
+    with user_transaction(db.runtime, b["user_id"], app_id="zheri") as c:
         assert c.scalar(sa.select(AppSession.id).where(AppSession.user_id == expected)) is None
     with pytest.raises(DBAPIError):
         with db.replication.begin() as c:
             c.execute(sa.select(AppSession))
     # A valid signature with no server session is not accepted in DSM mode.
-    client.headers["Authorization"] = "Bearer " + authority.issue(expected, API_AUDIENCE)
+    client.headers["Authorization"] = "Bearer " + authority.issue(
+        expected, API_AUDIENCE, app_id="zheri"
+    )
     assert client.get("/v1/datasets").status_code == 401
 
 
@@ -151,7 +154,7 @@ def test_refresh_verifies_upstream_and_logout_revokes_immediately(authenticated)
     assert client.post("/v1/auth/refresh", json=body).status_code == 401
 
 
-def test_existing_trial_login_finishes_state_without_changing_dataset(authenticated, db):
+def test_existing_primary_space_login_keeps_dataset_identity(authenticated, db):
     client, dsm, _, _ = authenticated
     actor = hashlib.sha256(
         f"synology-direct-v1|https://old-dsm.test:5001|{dsm.seed}".encode()
@@ -164,12 +167,19 @@ def test_existing_trial_login_finishes_state_without_changing_dataset(authentica
         )
         c.execute(
             sa.text("""INSERT INTO core.datasets(id,app_id,owner_id,name,kind)
-            VALUES(:id,'zheri',:actor,'旧账号','trial')"""),
+            VALUES(:id,'zheri',:actor,'个人账本','personal')"""),
             {"id": dataset, "actor": actor},
         )
         c.execute(
             sa.text("INSERT INTO core.dataset_members(dataset_id,user_id) VALUES(:id,:actor)"),
             {"id": dataset, "actor": actor},
+        )
+        c.execute(
+            sa.text(
+                "INSERT INTO core.personal_spaces(app_id,user_id,dataset_id) "
+                "VALUES('zheri',:actor,:id)"
+            ),
+            {"actor": actor, "id": dataset},
         )
     first = login(client)
     assert first["dataset_id"] == dataset == "test-" + actor
@@ -214,7 +224,7 @@ def test_unsafe_discovery_rejected_before_password_is_sent(authenticated):
 def test_account_creation_function_requires_valid_context_and_no_direct_grants(db):
     with pytest.raises(DBAPIError):
         with db.runtime.begin() as c:
-            c.exec_driver_sql("SELECT core.ensure_personal_account('invalid')")
+            c.exec_driver_sql("SELECT core.ensure_app_account('invalid')")
     with pytest.raises(DBAPIError):
-        with user_transaction(db.runtime, "alice") as c:
+        with user_transaction(db.runtime, "alice", app_id="zheri") as c:
             c.execute(sa.insert(User).values(id="illegal", display_name="illegal"))
