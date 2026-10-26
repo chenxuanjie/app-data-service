@@ -221,6 +221,27 @@ def test_unsafe_discovery_rejected_before_password_is_sent(authenticated):
     assert response.status_code == 503 and len(dsm.calls) == 1
 
 
+def test_total_login_deadline_is_preserved_and_reported_as_timeout(authenticated, monkeypatch):
+    import asyncio
+
+    from app_data_service import auth_routes
+
+    client, dsm, _, manager = authenticated
+
+    async def stalled_login(*args):
+        await asyncio.sleep(1)
+        raise AssertionError("The total deadline must cancel this operation")
+
+    monkeypatch.setattr(manager.provider, "login", stalled_login)
+    monkeypatch.setattr(auth_routes, "LOGIN_TIMEOUT_SECONDS", 0.05)
+    result = client.post(
+        "/v1/auth/login", json={"account": "alice", "password": "fixture-password"}
+    )
+    assert result.status_code == 504
+    assert result.json() == {"detail": "provider_timeout"}
+    assert not dsm.sessions
+
+
 def test_account_creation_function_requires_valid_context_and_no_direct_grants(db):
     with pytest.raises(DBAPIError):
         with db.runtime.begin() as c:

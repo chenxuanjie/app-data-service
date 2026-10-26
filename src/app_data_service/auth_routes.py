@@ -1,6 +1,7 @@
 """Application-independent authentication routes and bounded DSM exchange."""
 
 import asyncio
+import logging
 import time
 from collections import OrderedDict
 from typing import Annotated
@@ -13,6 +14,9 @@ from .browser_sessions import BrowserSessions
 from .dependencies import Application
 from .dsm import DsmFailure
 from .sessions import REFRESH_AUDIENCE, REFRESH_LIFETIME
+
+logger = logging.getLogger(__name__)
+LOGIN_TIMEOUT_SECONDS = 30.0
 
 
 class Login(BaseModel):
@@ -52,15 +56,25 @@ def build_router(runtime, *, router=None, prefix="/v1/apps/{application_id}"):
         except TimeoutError as error:
             raise HTTPException(429, "rate_limited") from error
         try:
-            async with asyncio.timeout(30):
+            async with asyncio.timeout(LOGIN_TIMEOUT_SECONDS):
                 verified = await sessions.provider.login(body.account, body.password, body.otp)
+                started = time.monotonic()
                 try:
                     return await asyncio.to_thread(sessions.create, verified, app_id)
-                except Exception:
+                except Exception as error:
+                    logger.warning(
+                        "authentication_failed phase=create_session error_type=%s elapsed_ms=%d",
+                        type(error).__name__,
+                        round((time.monotonic() - started) * 1000),
+                    )
                     await sessions.provider.logout(verified.context)
                     raise
         except TimeoutError as error:
-            raise DsmFailure("provider_unavailable", 503) from error
+            logger.warning(
+                "authentication_failed phase=login reason=total_deadline budget_ms=%d",
+                round(LOGIN_TIMEOUT_SECONDS * 1000),
+            )
+            raise DsmFailure("provider_timeout", 504, reason="login_deadline") from error
         finally:
             capacity.release()
 
@@ -124,7 +138,7 @@ def build_router(runtime, *, router=None, prefix="/v1/apps/{application_id}"):
             try:
                 return await browser.restore(request)
             except TimeoutError as error:
-                raise DsmFailure() from error
+                raise DsmFailure("provider_timeout", 504, reason="restore_deadline") from error
 
         @router.post(prefix + "/auth/browser/logout")
         async def browser_logout(request: Request, browser: Browser):
@@ -136,7 +150,7 @@ def build_router(runtime, *, router=None, prefix="/v1/apps/{application_id}"):
             async with asyncio.timeout(15):
                 return await sessions.refresh(body.refresh_token, app_id)
         except TimeoutError as error:
-            raise DsmFailure() from error
+            raise DsmFailure("provider_timeout", 504, reason="refresh_deadline") from error
 
     @router.post(prefix + "/auth/logout")
     async def logout(body: Refresh, app_id: Application):

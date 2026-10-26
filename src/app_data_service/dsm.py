@@ -2,16 +2,22 @@
 
 import asyncio
 import hashlib
+import logging
 import re
+import ssl
+import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 
 class DsmFailure(Exception):
-    def __init__(self, code="provider_unavailable", status=503):
+    def __init__(self, code="provider_unavailable", status=503, *, reason="upstream_error"):
         self.code, self.status = code, status
+        self.reason = reason
         super().__init__(code)
 
 
@@ -23,12 +29,18 @@ class VerifiedDsm:
 
 
 class DsmProvider:
+    # The authentication route still bounds the entire login at 30 seconds.
+    # Give a cold DSM Auth/FileStation response room inside that shared budget;
+    # refresh/file/logout requests retain their shorter normal deadlines.
+    LOGIN_READ_TIMEOUT = 20.0
+    LOGIN_CALL_TIMEOUT = 25.0
+
     def __init__(
         self,
         origin: str,
         *,
         identity_origin: str | None = None,
-        verify: bool | str = True,
+        verify: bool | str | ssl.SSLContext = True,
         transport=None,
     ):
         self.origin = self.validate_origin(origin)
@@ -50,12 +62,33 @@ class DsmProvider:
             raise ValueError("A fixed DSM HTTPS origin is required")
         return origin.rstrip("/")
 
-    async def call(self, client, path: str, fields: dict) -> dict:
+    async def call(self, client, path: str, fields: dict, *, timeout=10.0) -> dict:
+        started = time.monotonic()
+        phase = {
+            ("SYNO.API.Info", "query"): "discovery",
+            ("SYNO.API.Auth", "login"): "login",
+            ("SYNO.FileStation.Info", "get"): "identity_check",
+            ("SYNO.API.Auth", "logout"): "logout",
+        }.get((fields.get("api"), fields.get("method")), "other")
         try:
-            async with asyncio.timeout(10):
+            async with asyncio.timeout(timeout):
                 return await self._call(client, path, fields)
         except TimeoutError as error:
-            raise DsmFailure() from error
+            logger.warning(
+                "dsm_request_failed phase=%s reason=deadline elapsed_ms=%d",
+                phase,
+                round((time.monotonic() - started) * 1000),
+            )
+            raise DsmFailure("provider_timeout", 504, reason="deadline") from error
+        except DsmFailure as error:
+            logger.warning(
+                "dsm_request_failed phase=%s reason=%s code=%s elapsed_ms=%d",
+                phase,
+                error.reason,
+                error.code,
+                round((time.monotonic() - started) * 1000),
+            )
+            raise
 
     @staticmethod
     def session_headers(context):
@@ -102,7 +135,7 @@ class DsmProvider:
                     raise (
                         DsmFailure("rate_limited", 429)
                         if response.status_code == 429
-                        else DsmFailure()
+                        else DsmFailure(reason=f"http_status_{response.status_code}")
                     )
                 data = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -135,20 +168,24 @@ class DsmProvider:
             return result
         except DsmFailure:
             raise
-        except (httpx.HTTPError, ValueError, TypeError, AttributeError) as error:
-            raise DsmFailure() from error
+        except httpx.TimeoutException as error:
+            raise DsmFailure("provider_timeout", 504, reason=type(error).__name__) from error
+        except httpx.HTTPError as error:
+            raise DsmFailure(reason=type(error).__name__) from error
+        except (ValueError, TypeError, AttributeError) as error:
+            raise DsmFailure(reason="invalid_response") from error
 
-    def client(self):
+    def client(self, *, for_login=False):
         return httpx.AsyncClient(
             verify=self.verify,
             transport=self.transport,
             trust_env=False,
             follow_redirects=False,
-            timeout=httpx.Timeout(8, connect=4),
+            timeout=httpx.Timeout(self.LOGIN_READ_TIMEOUT if for_login else 8, connect=4),
         )
 
-    async def profile(self, context: dict) -> str:
-        async with self.client() as client:
+    async def profile(self, context: dict, *, for_login=False) -> str:
+        async with self.client(for_login=for_login) as client:
             profile = await self.call(
                 client,
                 context["info_path"],
@@ -159,6 +196,7 @@ class DsmProvider:
                     "_sid": context["sid"],
                     **({"SynoToken": context["synotoken"]} if context.get("synotoken") else {}),
                 },
+                timeout=self.LOGIN_CALL_TIMEOUT if for_login else 10,
             )
         uid = profile.get("uid")
         if type(uid) is not int or uid <= 0:
@@ -170,7 +208,7 @@ class DsmProvider:
     async def login(self, account: str, password: str, otp: str | None) -> VerifiedDsm:
         context = None
         try:
-            async with self.client() as client:
+            async with self.client(for_login=True) as client:
                 specs = await self.call(
                     client,
                     "entry.cgi",
@@ -180,6 +218,7 @@ class DsmProvider:
                         "method": "query",
                         "query": "SYNO.API.Auth,SYNO.FileStation.Info",
                     },
+                    timeout=self.LOGIN_CALL_TIMEOUT,
                 )
                 for name, version in [("SYNO.API.Auth", 6), ("SYNO.FileStation.Info", 2)]:
                     spec = specs.get(name, {})
@@ -208,6 +247,7 @@ class DsmProvider:
                         "enable_syno_token": "yes",
                         **({"otp_code": otp} if otp else {}),
                     },
+                    timeout=self.LOGIN_CALL_TIMEOUT,
                 )
                 if not isinstance(data.get("sid"), str) or not 1 <= len(data["sid"]) <= 8192:
                     raise DsmFailure()
@@ -217,7 +257,7 @@ class DsmProvider:
                     "auth_path": auth_path,
                     "info_path": info_path,
                 }
-            user_id = await self.profile(context)
+            user_id = await self.profile(context, for_login=True)
             return VerifiedDsm(user_id, account, context)
         except Exception:
             if context:
