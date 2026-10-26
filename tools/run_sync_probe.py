@@ -138,6 +138,11 @@ def run() -> None:
     )
     parser.add_argument("--dart", default=shutil.which("dart") or "dart")
     parser.add_argument("--application-scope-only", action="store_true")
+    parser.add_argument(
+        "--board-flutter",
+        type=Path,
+        help="Run the board game's actual Flutter PowerSync store tests",
+    )
     args = parser.parse_args()
     registry = installed_applications()
     install_notes = None
@@ -230,7 +235,12 @@ def run() -> None:
                 "multi_entity": True,
                 "full_business": True,
                 "tokens": {
-                    user: authority.issue(user, API_AUDIENCE, seconds=900, app_id="zheri")
+                    user: authority.issue(
+                        user,
+                        API_AUDIENCE,
+                        seconds=900,
+                        app_id="board_game_agent" if args.board_flutter else "zheri",
+                    )
                     for user in ["alice", "bob"]
                 },
             }
@@ -279,6 +289,23 @@ def run() -> None:
                 [{"dataset_id": user + "-data", "user_id": user} for user in ["alice", "bob"]]
                 + [{"dataset_id": "other-data", "user_id": "alice"}],
             )
+            if args.board_flutter:
+                c.execute(
+                    sa.insert(Dataset),
+                    [
+                        {
+                            "id": "board-" + user,
+                            "owner_id": user,
+                            "app_id": "board_game_agent",
+                            "name": user,
+                        }
+                        for user in ("alice", "bob")
+                    ],
+                )
+                c.execute(
+                    sa.insert(DatasetMember),
+                    [{"dataset_id": "board-" + user, "user_id": user} for user in ("alice", "bob")],
+                )
             c.execute(
                 sa.insert(Expense).values(
                     id="other-app-secret",
@@ -365,6 +392,11 @@ def run() -> None:
             "APP_DATA_ISSUER": authority.issuer,
             "APP_DATA_SYNC_ENDPOINT": "http://127.0.0.1:18290",
         }
+        if args.board_flutter:
+            environment.update(
+                APP_DATA_SYNC_ENDPOINT="http://127.0.0.1:18280/powersync",
+                APP_DATA_POWERSYNC_UPSTREAM="http://127.0.0.1:18290",
+            )
         service_log = (directory / "api.log").open("w", encoding="utf-8")
         backend = subprocess.Popen(
             [
@@ -410,6 +442,35 @@ def run() -> None:
             summary = check_application_streams(authority)
             print(json.dumps(summary), flush=True)
             (directory / "result.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            return
+        if args.board_flutter:
+            board = ROOT.parent.parent / "board-game-agent"
+            result = subprocess.run(
+                [
+                    str(args.board_flutter),
+                    "test",
+                    "test/probes/board_live_probe.dart",
+                    "--reporter",
+                    "expanded",
+                    "--dart-define=BOARD_PROBE_CONFIG=" + str(dart_config),
+                ],
+                cwd=board,
+                timeout=180,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            (directory / "board.log").write_text(result.stdout + result.stderr, encoding="utf-8")
+            if result.returncode:
+                raise RuntimeError("Board live probe failed; inspect the ignored board.log")
+            print(
+                "Board actual store: offline convergence, preferences, chat and isolation passed",
+                flush=True,
+            )
+            (directory / "result.json").write_text(
+                json.dumps({"board_sdk_passed": True}), encoding="utf-8"
+            )
             return
         print("PowerSync healthy; running independent Dart clients", flush=True)
         result = subprocess.run(

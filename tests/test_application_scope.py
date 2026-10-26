@@ -96,7 +96,7 @@ def test_forged_app_header_cannot_read_refresh_or_revoke_another_app(authenticat
         assert client.get(path(board, suffix), headers=headers(board)).status_code == 404
     assert client.get(path(board, "/services"), headers=headers(board)).json()["file_areas"] == []
     assert (
-        client.post(path(board, "/sync/upload"), headers=headers(board), json={}).status_code == 404
+        client.post(path(board, "/sync/upload"), headers=headers(board), json={}).status_code == 422
     )
     assert client.get("/v1/datasets", headers=headers(board)).status_code == 401
 

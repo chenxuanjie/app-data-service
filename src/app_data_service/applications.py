@@ -4,6 +4,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -26,6 +27,7 @@ class ApplicationDefinition:
     personal_space_name: str = "个人数据"
     personal_id_prefix: str | None = None
     file_areas: tuple[str, ...] = ()
+    public_file_areas: tuple[str, ...] = ()
     capabilities: Mapping[str, Any] = field(default_factory=dict)
     sync_streams: Mapping[str, Any] = field(default_factory=dict)
     replication_tables: tuple[str, ...] = ()
@@ -47,6 +49,10 @@ class ApplicationDefinition:
             not re.fullmatch(r"[a-z][a-z0-9_]{1,31}", area) for area in self.file_areas
         ):
             raise ValueError("Invalid application file areas")
+        if len(set(self.public_file_areas)) != len(self.public_file_areas) or any(
+            not re.fullmatch(r"[a-z][a-z0-9_]{1,31}", area) for area in self.public_file_areas
+        ):
+            raise ValueError("Invalid public application file areas")
         json.dumps(dict(self.capabilities))
         json.dumps(dict(self.sync_streams))
         if any(
@@ -143,7 +149,11 @@ class ApplicationRegistry:
         result = {}
         for key, value in settings.items():
             definition = self.get(key)
-            if not isinstance(value, dict) or set(value) - {"browser_origin", "file_roots"}:
+            if not isinstance(value, dict) or set(value) - {
+                "browser_origin",
+                "file_roots",
+                "public_file_roots",
+            }:
                 raise ValueError("Unknown application settings")
             roots = value.get("file_roots", {})
             if not isinstance(roots, dict) or set(roots) - set(definition.file_areas):
@@ -155,6 +165,18 @@ class ApplicationRegistry:
                     relative_path(root[1:])
                 except HTTPException as error:
                     raise ValueError("Invalid application file root") from error
+            public = value.get("public_file_roots", {})
+            if not isinstance(public, dict) or set(public) - set(definition.public_file_areas):
+                raise ValueError("Public file areas must be declared by the application module")
+            for root in public.values():
+                if (
+                    not isinstance(root, str)
+                    or not (root.startswith("/") or Path(root).is_absolute())
+                    or "\x00" in root
+                ):
+                    raise ValueError("Public files require an absolute local mount path")
+                if any(part in (".", "..") for part in root.split("/")):
+                    raise ValueError("Invalid public application file root")
             result[key] = {**value, "file_roots": dict(roots)}
             if value.get("browser_origin") is not None:
                 result[key]["browser_origin"] = browser_origin(value["browser_origin"])

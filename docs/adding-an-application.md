@@ -34,7 +34,7 @@
 
 ## 4. 配置文件、浏览器和同步
 
-把应用的 browser_origin、已声明 file_roots 写入 `APP_DATA_APPLICATIONS`。
+把应用的 browser_origin、已声明 file_roots / public_file_roots 写入 `APP_DATA_APPLICATIONS`。公开目录须先在模块 public_file_areas 声明，再由管理员提供只读挂载；不得把私人文件根公开。
 多个 Web 应用使用不同 origin；现有网页来源保持稳定以保留浏览器本地数据分区。
 只有已声明区域才能配置文件根，客户端不能指定任意 NAS 路径或上游。
 

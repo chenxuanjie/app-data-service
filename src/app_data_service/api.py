@@ -64,7 +64,12 @@ def create_app(
             engine.dispose()
 
     app = FastAPI(title="App Data Service", version="0.5.0", lifespan=lifespan)
-    runtime = ServiceRuntime(app, engine, authority, applications, sync_endpoint, sessions)
+    # SDK endpointUri uses URI.resolve: a mount path must end in '/' or it
+    # resolves sync/stream beside the mount instead of underneath it.
+    runtime = ServiceRuntime(
+        app, engine, authority, applications, sync_endpoint.rstrip("/") + "/", sessions
+    )
+    runtime.application_settings = settings
     app.state.runtime, app.state.applications, app.state.engine = runtime, applications, engine
     app.add_middleware(BoundedBody)
     if allowed_origins:

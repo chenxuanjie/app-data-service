@@ -19,3 +19,4 @@ class ServiceRuntime:
     files: dict = field(default_factory=dict)
     auth_quota: Any = None
     auth_capacity: Any = None
+    application_settings: dict = field(default_factory=dict)

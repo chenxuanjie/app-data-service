@@ -45,6 +45,7 @@ def stack(
     dsm_identity_origin=None,
     dsm_lan_ip=None,
     application_settings=None,
+    public_mounts=None,
 ):
     parsed = urlsplit(origin)
     if (
@@ -127,6 +128,31 @@ REVOKE ALL ON DATABASE powersync_storage FROM PUBLIC;
             "retries": 12,
         },
     }
+    # Public content is an explicit read-only local mount, declared by modules.
+    # Never create a NAS directory as a side effect of starting this stack.
+    roots = {
+        root for value in settings.values() for root in value.get("public_file_roots", {}).values()
+    }
+    mounts = public_mounts or {}
+    if set(mounts) != roots or any(
+        not isinstance(source, str)
+        or not source.startswith("/")
+        or "\x00" in source
+        or ".." in source.split("/")
+        for source in mounts.values()
+    ):
+        raise ValueError("Supply an explicit absolute host mount for every public file root")
+    if roots:
+        configuration["services"]["api"]["volumes"] = [
+            {
+                "type": "bind",
+                "source": mounts[root],
+                "target": root,
+                "read_only": True,
+                "bind": {"create_host_path": False},
+            }
+            for root in sorted(roots)
+        ]
     if dsm_lan_ip:
         import ipaddress
 
@@ -196,6 +222,9 @@ def main():
     parser.add_argument("--dsm-identity-origin")
     parser.add_argument("--dsm-lan-ip")
     parser.add_argument("--applications", type=Path, help="Application settings JSON file")
+    parser.add_argument(
+        "--public-mounts", type=Path, help="JSON: declared container root to host path"
+    )
     parser.add_argument("--output", type=Path, default=ROOT / "deploy/compose.synology-test.yaml")
     args = parser.parse_args()
     if args.output.exists():
@@ -211,6 +240,9 @@ def main():
         dsm_lan_ip=args.dsm_lan_ip,
         application_settings=json.loads(args.applications.read_text(encoding="utf-8"))
         if args.applications
+        else {},
+        public_mounts=json.loads(args.public_mounts.read_text(encoding="utf-8"))
+        if args.public_mounts
         else {},
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

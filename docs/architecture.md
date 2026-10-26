@@ -15,11 +15,11 @@
 | `platform_routes.py` | 数据空间、能力、文件、更新、同步凭据等公共接口 |
 | `modules/registry.py` | 安装清单：显式装配经过审查的模块 |
 | `modules/zheri/` | Zheri 的业务表、校验、冲突合并、导入、命令行及 API |
-| `modules/board_game_agent.py` | 桌游应用登记；业务模型和客户端接入尚未实现 |
+| `modules/board_game_agent/` | 桌游类型化私人表、公开资料、社区命令、统计与同步声明 |
 | `tools/render_sync_config.py` | 从安装模块的声明生成统一 PowerSync 配置 |
 | `tests/notes_application.py` | 仅测试使用的第三个应用，包含独立业务表、接口与同步流 |
 
-公共核心不按应用名称选择业务。模块声明自己的 ID、schema、个人数据能力、文件区域、
+公共核心不按应用名称选择业务。模块声明自己的 ID、schema、个人数据能力、私人/公开文件区域、
 业务能力、路由、命令行和复制表/同步流。业务路由必须通过 `application_router(app_id)`
 固定所属应用；服务启动拒绝未绑定或绑定到其他应用的路由。
 

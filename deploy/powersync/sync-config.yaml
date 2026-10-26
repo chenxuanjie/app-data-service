@@ -38,3 +38,39 @@ streams:
       \ IS NULL AND dataset_id IN (\n  SELECT id FROM core.datasets WHERE app_id =\
       \ auth.parameter('app_id') AND app_id = 'zheri' AND id IN (\n    SELECT dataset_id\
       \ FROM core.dataset_members WHERE user_id = auth.user_id()\n  )\n)\n"
+  board_private_favorites:
+    auto_subscribe: true
+    query: SELECT favorites.* FROM board_game_agent.favorites WHERE deleted_at IS
+      NULL AND dataset_id IN (SELECT id FROM core.datasets WHERE app_id=auth.parameter('app_id')
+      AND app_id='board_game_agent' AND id IN (SELECT dataset_id FROM core.dataset_members
+      WHERE user_id=auth.user_id()))
+  board_private_recent_games:
+    auto_subscribe: true
+    query: SELECT recent_games.* FROM board_game_agent.recent_games WHERE deleted_at
+      IS NULL AND dataset_id IN (SELECT id FROM core.datasets WHERE app_id=auth.parameter('app_id')
+      AND app_id='board_game_agent' AND id IN (SELECT dataset_id FROM core.dataset_members
+      WHERE user_id=auth.user_id()))
+  board_private_preferences:
+    auto_subscribe: true
+    query: SELECT preferences.* FROM board_game_agent.preferences WHERE deleted_at
+      IS NULL AND dataset_id IN (SELECT id FROM core.datasets WHERE app_id=auth.parameter('app_id')
+      AND app_id='board_game_agent' AND id IN (SELECT dataset_id FROM core.dataset_members
+      WHERE user_id=auth.user_id()))
+  board_private_conversations:
+    auto_subscribe: true
+    query: SELECT conversations.* FROM board_game_agent.conversations WHERE deleted_at
+      IS NULL AND dataset_id IN (SELECT id FROM core.datasets WHERE app_id=auth.parameter('app_id')
+      AND app_id='board_game_agent' AND id IN (SELECT dataset_id FROM core.dataset_members
+      WHERE user_id=auth.user_id()))
+  board_private_messages:
+    auto_subscribe: true
+    query: SELECT messages.* FROM board_game_agent.messages WHERE deleted_at IS NULL
+      AND dataset_id IN (SELECT id FROM core.datasets WHERE app_id=auth.parameter('app_id')
+      AND app_id='board_game_agent' AND id IN (SELECT dataset_id FROM core.dataset_members
+      WHERE user_id=auth.user_id()))
+  board_private_votes:
+    auto_subscribe: true
+    query: SELECT votes.* FROM board_game_agent.votes WHERE deleted_at IS NULL AND
+      dataset_id IN (SELECT id FROM core.datasets WHERE app_id=auth.parameter('app_id')
+      AND app_id='board_game_agent' AND id IN (SELECT dataset_id FROM core.dataset_members
+      WHERE user_id=auth.user_id()))
