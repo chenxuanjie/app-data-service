@@ -227,7 +227,7 @@ def main():
             assert (
                 client.post(
                     board_path + "/auth/logout",
-                    json={"refresh_token": board_refreshed.json()["refresh_token"]},
+                    json={"refresh_token": board["refresh_token"]},
                 ).status_code
                 == 200
             )
