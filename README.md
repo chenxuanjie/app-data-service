@@ -168,6 +168,9 @@ PowerSync 实验使用静态公钥，避免容器访问宿主机的额外网络�
 交付集中在 `release/` 根目录，包名为 `fastapi-<API服务版本>.tar.gz`、`postgresql-17.11.tar.gz`、`powersync-1.27.0.tar.gz`，报告收在 `metadata/`，后续仅API更新使用 `--api-only`，无需重传未变化的数据库与同步镜像。
 验证器使用随机隔离的容器、卷、数据库及严格 TLS DSM 替身，不访问真实 NAS。
 API 镜像以 UID 10001 运行，构建上下文不含 `.local`、密钥或本地数据库。
+0.5.0 起为纯 API 镜像，不包含折日或其他应用的网页，不要求 Flutter/Web 构建输入。
+各应用 Web 独立部署；同源网关将 `/api/` 转发到后台并移除该前缀，API 自身不再提供页面或此别名。
+当前交付操作和升级边界见 [纯 API 交付说明](docs/release-guide.md)。
 本次具体文件、重建方法和手动验收步骤见 [群晖测试部署与验收](docs/synology-test.md)。
 
 参见 [数据字典](docs/database.md)、[同步 API](docs/sync-api.md) 与 [验证状态](docs/validation.md)。

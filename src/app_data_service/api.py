@@ -27,7 +27,6 @@ from .platform_routes import build_router
 from .runtime import ServiceRuntime
 from .sessions import SessionManager
 from .sync_gateway import install as install_sync_gateway
-from .web import SameOriginWeb
 
 
 def create_app(
@@ -41,7 +40,6 @@ def create_app(
     allowed_origins: list[str] | None = None,
     applications: ApplicationRegistry | None = None,
     application_settings: dict | None = None,
-    web_directory: Path | None = None,
 ) -> FastAPI:
     endpoint = urlsplit(sync_endpoint)
     if (
@@ -143,8 +141,6 @@ def create_app(
     def jwks():
         return {"keys": [authority.jwk]}
 
-    if web_directory is not None:
-        app.add_middleware(SameOriginWeb, directory=web_directory)
     return app
 
 
@@ -183,7 +179,4 @@ def from_environment() -> FastAPI:
             for v in os.environ.get("APP_DATA_ALLOWED_ORIGINS", "").split(",")
             if v.strip()
         ],
-        web_directory=Path(os.environ["APP_DATA_WEB_DIRECTORY"])
-        if os.environ.get("APP_DATA_WEB_DIRECTORY")
-        else None,
     )

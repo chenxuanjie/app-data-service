@@ -20,9 +20,25 @@ from render_stack import stack
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def verification_stack(api_image):
+    return stack(
+        "/volume2/friend/apps/app_data_service_test/postgres",
+        "http://127.0.0.1:18380",
+        "https://dsm.test:9443",
+        api_image=api_image,
+        application_settings={
+            "zheri": {
+                "browser_origin": "http://127.0.0.1:18380",
+                "file_roots": {"updates": "/fixture/updates"},
+            },
+            "board_game_agent": {"browser_origin": "http://localhost:18380"},
+        },
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--api-image", default="app-data-service:0.4.0-test")
+    parser.add_argument("--api-image", default="app-data-service:0.5.0-test")
     parser.add_argument("--dart", default=shutil.which("dart") or "dart")
     parser.add_argument(
         "--docker", choices=["native", "wsl"], default="wsl" if os.name == "nt" else "native"
@@ -30,6 +46,24 @@ def main():
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     docker = ["wsl", "-d", "Ubuntu", "--exec", "docker"] if args.docker == "wsl" else ["docker"]
+    subprocess.run(
+        [
+            *docker,
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--entrypoint",
+            "python",
+            args.api_image,
+            "-c",
+            "from pathlib import Path; import os; "
+            "assert not Path('/app/web').exists(); "
+            "assert 'APP_DATA_WEB_DIRECTORY' not in os.environ",
+        ],
+        check=True,
+        timeout=20,
+    )
 
     def linux(path):
         return (
@@ -64,13 +98,7 @@ def main():
             serialization.NoEncryption(),
         )
     )
-    configuration = stack(
-        "/volume2/friend/apps/app_data_service_test/postgres",
-        "http://127.0.0.1:18380",
-        "https://dsm.test:9443",
-        api_image=args.api_image,
-        updates_root="/fixture/updates",
-    )
+    configuration = verification_stack(args.api_image)
     configuration["name"] = directory.name
     configuration["services"]["postgres"]["volumes"] = ["test_pgdata:/var/lib/postgresql/data"]
     configuration["volumes"] = {"test_pgdata": {}}
@@ -78,7 +106,6 @@ def main():
     api["ports"] = ["127.0.0.1:18380:8000"]
     api["volumes"] = [f"{linux(directory / 'ca.pem')}:/tls/ca.pem:ro"]
     api["environment"]["APP_DATA_DSM_CA"] = "/tls/ca.pem"
-    api["environment"]["APP_DATA_BROWSER_ORIGIN"] = "http://127.0.0.1:18380"
     configuration["services"]["mock-dsm"] = {
         "image": args.api_image,
         "command": ["python", "/fixture/mock_dsm.py", "/tls/ca.pem", "/tls/key.pem"],
@@ -158,14 +185,12 @@ def main():
         report["migration_credentials_removed_from_api_process"] = True
         with httpx.Client(trust_env=False, timeout=35) as client:
             base = "http://127.0.0.1:18380"
-            for path in ["/", "/settings/account"]:
-                response = client.get(base + path)
-                assert response.status_code == 200 and "flutter_bootstrap.js" in response.text
-                assert response.headers["cross-origin-embedder-policy"] == "require-corp"
+            for path in ["/", "/settings/account", "/index.html", "/main.dart.js"]:
+                assert client.get(base + path).status_code == 404
             assert client.get(base + "/missing.js").status_code == 404
-            assert client.get(base + "/api/v1/client-config").json()["browser_sessions"]
-            assert client.get(base + "/api/v1/datasets").status_code == 401
-            report["bundled_web_and_same_origin_api"] = True
+            assert client.get(base + "/v1/client-config").json()["browser_sessions"]
+            assert client.get(base + "/v1/datasets").status_code == 401
+            report["api_only_runtime_without_bundled_frontend"] = True
             users = {}
             for account in ["alice", "bob"]:
                 response = client.post(
@@ -176,22 +201,61 @@ def main():
                 users[account] = response.json()
             assert users["alice"]["dataset_id"] != users["bob"]["dataset_id"]
             assert client.get("http://127.0.0.1:18380/v1/datasets").status_code == 401
+            board_path = base + "/v1/apps/board_game_agent"
+            board_response = client.post(
+                board_path + "/auth/login",
+                json={"account": "alice", "password": "fixture-password"},
+            )
+            board_response.raise_for_status()
+            board = board_response.json()
+            assert board["user_id"] == users["alice"]["user_id"]
+            assert board["dataset_id"] != users["alice"]["dataset_id"]
+            board_headers = {"Authorization": "Bearer " + board["access_token"]}
+            assert client.get(board_path + "/datasets", headers=board_headers).status_code == 200
+            assert client.get(base + "/v1/datasets", headers=board_headers).status_code == 401
+            assert (
+                client.get(
+                    board_path + "/datasets",
+                    headers={"Authorization": "Bearer " + users["alice"]["access_token"]},
+                ).status_code
+                == 401
+            )
+            board_refreshed = client.post(
+                board_path + "/auth/refresh", json={"refresh_token": board["refresh_token"]}
+            )
+            board_refreshed.raise_for_status()
+            assert (
+                client.post(
+                    board_path + "/auth/logout",
+                    json={"refresh_token": board_refreshed.json()["refresh_token"]},
+                ).status_code
+                == 200
+            )
+            assert client.get(board_path + "/datasets", headers=board_headers).status_code == 401
+            assert (
+                client.get(
+                    base + "/v1/datasets",
+                    headers={"Authorization": "Bearer " + users["alice"]["access_token"]},
+                ).status_code
+                == 200
+            )
+            report["multi_application_login_refresh_logout_and_isolation"] = True
             for account, status in [("alice", 200), ("bob", 403)]:
                 headers = {"Authorization": "Bearer " + users[account]["access_token"]}
-                response = client.get(base + "/api/v1/updates/manifest", headers=headers)
+                response = client.get(base + "/v1/updates/manifest", headers=headers)
                 assert response.status_code == status
                 if status == 200:
                     assert response.json()["buildNumber"] == 999
-                    full = client.get(base + "/api/v1/files/updates/fixture.apk", headers=headers)
+                    full = client.get(base + "/v1/files/updates/fixture.apk", headers=headers)
                     partial = client.get(
-                        base + "/api/v1/files/updates/fixture.apk",
+                        base + "/v1/files/updates/fixture.apk",
                         headers={**headers, "Range": "bytes=4-"},
                     )
                     assert partial.status_code == 206 and partial.content == full.content[4:]
             report["account_files_permissions_and_range"] = True
             browser_headers = {"Origin": base, "Content-Type": "application/json"}
             bootstrap = client.post(
-                base + "/api/v1/auth/browser/bootstrap", headers=browser_headers, json={}
+                base + "/v1/auth/browser/bootstrap", headers=browser_headers, json={}
             )
             assert bootstrap.status_code == 200
             cookie = bootstrap.headers["set-cookie"]
@@ -201,7 +265,7 @@ def main():
             browser_headers["Cookie"] = cookie.split(";", 1)[0]
             browser_headers["X-CSRF-Token"] = bootstrap.json()["csrf_token"]
             signed = client.post(
-                base + "/api/v1/auth/browser/login",
+                base + "/v1/auth/browser/login",
                 headers=browser_headers,
                 json={"account": "alice", "password": "fixture-password"},
             )
@@ -209,7 +273,7 @@ def main():
             browser_token = signed.json()["access_token"]
             assert (
                 client.post(
-                    base + "/api/v1/auth/browser/restore", headers=browser_headers, json={}
+                    base + "/v1/auth/browser/restore", headers=browser_headers, json={}
                 ).status_code
                 == 200
             )
@@ -302,19 +366,19 @@ def main():
             report["api_restart_retains_session_and_signing_key"] = True
             assert (
                 client.post(
-                    base + "/api/v1/auth/browser/restore", headers=browser_headers, json={}
+                    base + "/v1/auth/browser/restore", headers=browser_headers, json={}
                 ).status_code
                 == 200
             )
             assert (
                 client.post(
-                    base + "/api/v1/auth/browser/logout", headers=browser_headers, json={}
+                    base + "/v1/auth/browser/logout", headers=browser_headers, json={}
                 ).status_code
                 == 200
             )
             assert (
                 client.get(
-                    base + "/api/v1/datasets", headers={"Authorization": "Bearer " + browser_token}
+                    base + "/v1/datasets", headers={"Authorization": "Bearer " + browser_token}
                 ).status_code
                 == 401
             )

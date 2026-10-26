@@ -8,6 +8,24 @@ from pathlib import Path
 import pytest
 
 
+def test_container_validation_uses_current_application_contract(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
+    verifier = importlib.import_module("verify_stack")
+    configuration = verifier.verification_stack("app-data-service:fixture")
+    api = configuration["services"]["api"]
+    settings = json.loads(api["environment"]["APP_DATA_APPLICATIONS"])
+    assert settings["zheri"]["file_roots"]["updates"] == "/fixture/updates"
+    assert settings["zheri"]["browser_origin"] != settings["board_game_agent"]["browser_origin"]
+    assert "APP_DATA_BROWSER_ORIGIN" not in api["environment"]
+    assert "APP_DATA_UPDATES_ROOT" not in api["environment"]
+    assert "app-data register-applications" in api["command"][2]
+    bundler = importlib.import_module("build_docker_bundle")
+    bundler.validate_api_configuration(configuration)
+    del api["environment"]["APP_DATA_APPLICATIONS"]
+    with pytest.raises(ValueError, match="APP_DATA_APPLICATIONS"):
+        bundler.validate_api_configuration(configuration)
+
+
 @pytest.mark.parametrize(
     "fault", [None, "oci", "wrong-tag", "wrong-platform", "wrong-id", "missing-layer"]
 )

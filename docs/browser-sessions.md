@@ -18,6 +18,7 @@
 当前每个应用在 APP_DATA_APPLICATIONS 中配置 browser_origin 才启用浏览器会话，见 [当前契约](application-scope.md)。网页和 /api/ 同源，网关转发时移除 /api 前缀，
 保留 Origin、Content-Type、X-CSRF-Token、Cookie、Set-Cookie；不得缓存认证响应。
 FastAPI 不信任任意 X-Forwarded-* 或请求提供的 NAS 上游。
+0.5.0 起 FastAPI 为纯 API 服务，网页与 `/api/` 的同源转发由独立前端网关提供；后端不再内置静态页面或移除 `/api` 前缀的中间件。
 
 Cookie 名为 __Host-app-session-<app_id>，CSRF 绑定应用。Cookie 使用 Secure/HttpOnly/SameSite=Strict/Path=/，不设置 Domain；生产必须 HTTPS。
 CSRF token 使用服务器稳定密钥对随机 Cookie ID 的 HMAC，只通过同源响应交给页面内存。

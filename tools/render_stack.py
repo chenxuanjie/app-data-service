@@ -38,7 +38,7 @@ def stack(
     origin,
     dsm_origin,
     *,
-    api_image="app-data-service:0.4.0-test",
+    api_image="app-data-service:0.5.0-test",
     port=18280,
     allowed_origins="",
     secrets_bundle=None,
@@ -190,7 +190,7 @@ def main():
     parser.add_argument("--data-directory", required=True)
     parser.add_argument("--origin", required=True)
     parser.add_argument("--dsm-origin", required=True)
-    parser.add_argument("--api-image", default="app-data-service:0.4.0-test")
+    parser.add_argument("--api-image", default="app-data-service:0.5.0-test")
     parser.add_argument("--port", type=int, default=18280)
     parser.add_argument("--allowed-origins", default="")
     parser.add_argument("--dsm-identity-origin")
