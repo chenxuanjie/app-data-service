@@ -2,8 +2,10 @@
 
 import sqlalchemy as sa
 from fastapi import HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from app_data_service.auth import SYNC_AUDIENCE
 from app_data_service.dependencies import (
     Actor,
     Application,
@@ -23,6 +25,26 @@ def build_router(runtime):
     router = application_router("board_game_agent")
     settings = runtime.application_settings.get("board_game_agent", {})
     library = PublishedLibrary(settings.get("public_file_roots", {}).get("library"))
+
+    @router.post(PREFIX + "/community/sync-credentials")
+    def public_sync_credentials():
+        # Same short-lived anonymous credential can be reused by public readers.
+        # The sync-only audience and signed scope cannot authorize writes or private streams.
+        return JSONResponse(
+            {
+                "endpoint": runtime.sync_endpoint,
+                "token": runtime.authority.issue(
+                    "public:board_game_agent",
+                    SYNC_AUDIENCE,
+                    app_id="board_game_agent",
+                    extra={"sync_scope": "public"},
+                ),
+                "user_id": "public:board_game_agent",
+                "app_id": "board_game_agent",
+                "sync_scope": "public",
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     @router.get(PREFIX + "/library")
     def publication():

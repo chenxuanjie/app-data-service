@@ -36,13 +36,14 @@ def sqlstate(error):
 def test_real_postgres_migration_and_publication(db):
     report = inspect_database(db.urls["migrator"])
     assert report["postgres"].startswith("17.")
-    assert report["revision"] == "0012_board_game_business"
+    assert report["revision"] == "0013_board_public_changes"
     assert report["wal_level"] == "logical"
     assert report["publication"] == [
         "board_game_agent.conversations",
         "board_game_agent.favorites",
         "board_game_agent.messages",
         "board_game_agent.preferences",
+        "board_game_agent.public_changes",
         "board_game_agent.recent_games",
         "board_game_agent.votes",
         "core.dataset_members",

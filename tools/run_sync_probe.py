@@ -39,6 +39,61 @@ ROOT = Path(__file__).resolve().parents[1]
 NOTE_SENTINEL = "10000000-0000-4000-8000-000000000001"
 
 
+def check_board_public_scope(authority):
+    """Check pinned 1.27 NDJSON authorization, including forged SDK parameters."""
+
+    def tables(public):
+        token = authority.issue(
+            "alice",
+            SYNC_AUDIENCE,
+            app_id="board_game_agent",
+            extra={"sync_scope": "public"} if public else None,
+        )
+        body = {
+            "buckets": [],
+            "raw_data": False,
+            "parameters": {"sync_scope": None, "user_id": "alice", "app_id": "zheri"},
+        }
+        if public:
+            body["streams"] = {
+                "include_defaults": True,
+                "subscriptions": [
+                    {"stream": name, "parameters": {}, "override_priority": None}
+                    for name in ("board_private_favorites", "private_expenses")
+                ],
+            }
+        result, size = set(), 0
+        deadline = time.monotonic() + 20
+        with (
+            httpx.Client(trust_env=False, timeout=10) as client,
+            client.stream(
+                "POST",
+                "http://127.0.0.1:18290/sync/stream",
+                json=body,
+                headers={"Authorization": "Token " + token, "Accept": "application/x-ndjson"},
+            ) as response,
+        ):
+            response.raise_for_status()
+            for line in response.iter_lines():
+                size += len(line)
+                if size > 2 * 1024 * 1024 or time.monotonic() > deadline:
+                    raise TimeoutError("Public sync scope probe exceeded budget")
+                value = json.loads(line)
+                for entry in value.get("data", {}).get("data", []):
+                    if entry.get("op") == "PUT":
+                        result.add(entry["object_type"])
+                if "checkpoint_complete" in value:
+                    return result
+        raise RuntimeError("Public scope stream ended without checkpoint")
+
+    assert "favorites" in tables(False), "Expected fixture private favorites"
+    assert tables(True) == {"public_changes"}, "Public credentials leaked private data"
+    print(
+        "Public sync scope: forged subject/parameters/subscriptions cannot read private rows",
+        flush=True,
+    )
+
+
 def check_application_streams(authority):
     """Black-box the pinned 1.27.0 NDJSON endpoint, including forged client parameters.
 
@@ -470,6 +525,7 @@ def probe(args):
             (directory / "board.log").write_text(result.stdout + result.stderr, encoding="utf-8")
             if result.returncode:
                 raise RuntimeError("Board live probe failed; inspect the ignored board.log")
+            check_board_public_scope(authority)
             print(
                 "Board actual store: offline convergence, preferences, chat and isolation passed",
                 flush=True,

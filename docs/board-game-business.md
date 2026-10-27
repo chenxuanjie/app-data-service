@@ -20,6 +20,7 @@
 | GET `/community/comments/{game}` | 匿名可读，登录时附本人点赞状态；时间＋ID 游标分页 |
 | POST `/community/commands` | 登录，发布/删除/点赞的幂等命令；只可删除自己的评论 |
 | GET `/community/statistics` | 公开汇总；登录时仅额外返回本人的选择，便于客户端避免重复计数 |
+| POST `/community/sync-credentials` | 匿名，5 分钟的公共 PowerSync 凭据，仅同步每游戏版本；不能用于私人读取或写入 |
 
 命令/修改 ID 在账号和应用内唯一。同 ID 同内容返回原回执，不同内容返回 409。私人普通记录按服务端接受顺序覆盖；偏好 `changed_fields` 合并明确修改的字段，避免离线旧默认值覆盖另一设备的修改。删除是墓碑。单请求最多 100 条且受 512 KiB 请求体、锁和语句超时约束；桌游客户端按单条有界记录上传。
 
@@ -59,6 +60,18 @@ volumes:
 
 开发用 `render_stack.py --applications <json> --public-mounts <json>` 支持声明式配置；后一个 JSON 将每个已声明容器目录映射到明确宿主机路径。生成器要求所有目录有匹配挂载，固定只读且不创建宿主目录。不要为了加挂载重新生成已有私有 Compose，从而意外轮换数据库密码/密钥；保留已有数据目录、秘密和 DSM 身份命名空间。
 
-后续正式交付须配套：新 API 镜像、0012 迁移、应用注册、重新生成的 PowerSync 规则和只读公开目录。PostgreSQL/PowerSync 基础镜像版本未改变。API 仍是纯 API 镜像，不包含 Zheri 网页。所有 SDK 同步 endpoint 规范为以 `/` 结尾，避免 URI.resolve 丢掉 `/powersync/` 挂载路径。
+后续正式交付须配套：新 API 镜像、迁移至 0013、应用注册、重新生成的 PowerSync 规则和只读公开目录。PostgreSQL/PowerSync 基础镜像版本未改变。API 仍是纯 API 镜像，不包含 Zheri 网页。所有 SDK 同步 endpoint 规范为以 `/` 结尾，避免 URI.resolve 丢掉 `/powersync/` 挂载路径。
 
 Web 浏览器仍需要自己的 `/api/` 转发及 SQLite Worker 静态资源/响应头；用户已暂缓该部署问题，本轮不增加旧网关兼容。Loomex 模型服务、旧部署最终移除和实际设备验收不在阶段 2、3 的完成声明内。
+
+## 公共实时通知（2026-10-27）
+
+迁移 `0013_board_public_changes` 新增 `public_changes(id, statistics_version, comments_version)`。收藏、投票、评论、评论点赞的 AFTER 触发器与业务写入处在同一事务；回滚没有通知，幂等回执重放不重复修改版本。版本行保留，删除最后一票也能通知其他读者；新表初始汇总现有游戏 ID，不修改旧业务数据。
+
+运行角色只可按桌游 RLS 读取该表，无版本写入权限。触发器函数固定搜索路径且撤销 PUBLIC 执行权限。表加入 publication，生成配置增加 `board_public_changes` 流，只接受签名 `app_id=board_game_agent` 和 `sync_scope=public`；六个私人流额外排除公共 scope。客户端请求参数、伪造账号 ID 或手动订阅不能扩大签名权限。
+
+客户端保留独立公共数据库，只下载游戏 ID 和版本，收到变化后从已有 API 读取完整统计/正在查看的评论。统计与评论分开失效；没有复制其他用户的私人选择或把全量评论下发给游客。PowerSync 处理断线检查点与重连，客户端补读最新快照。
+
+本轮修改源码与测试，不构建镜像或部署。正式更新需同时发布 API（运行迁移到 0013）和新生成的同步配置，再更新客户端；无需升级数据库/PowerSync 镜像。回退客户端可保留新表；若要撤掉通知机制，先停公共订阅并审查依赖，0013 不提供自动破坏性 downgrade。
+
+验收：ruff 检查、格式检查和真实 PostgreSQL 完整 255 项 pytest 通过。`tools/run_sync_probe.py --docker wsl --board-flutter <flutter.bat>` 验证实际公共订阅的收藏汇总、评论新增/点赞/删除及暂停恢复，并用原始同步协议验证公共 scope 在伪造现有账号 subject、客户端参数和私人订阅时仍不返回私人行。一次性容器、数据库、角色和复制槽均已清理；真实 NAS 与安装产物不在该结论内。

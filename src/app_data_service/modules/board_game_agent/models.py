@@ -7,6 +7,15 @@ from app_data_service.models import Base
 
 SCHEMA = "board_game_agent"
 
+public_changes = sa.Table(
+    "public_changes",
+    Base.metadata,
+    sa.Column("id", sa.Text, primary_key=True),
+    sa.Column("statistics_version", sa.BigInteger, nullable=False, server_default="0"),
+    sa.Column("comments_version", sa.BigInteger, nullable=False, server_default="0"),
+    schema=SCHEMA,
+)
+
 
 def personal(name, *columns):
     return sa.Table(
