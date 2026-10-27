@@ -1,56 +1,63 @@
-"""Publish an explicit local resource snapshot; never connects to DSM or edits the source."""
+"""Explicit local conversion and maintenance publication; no NAS/network discovery."""
 
-import hashlib
-import json
-import shutil
 from pathlib import Path
 
-from .library import resource_path
+from app_data_service.config import make_engine
+
+from .catalog_import import DEFAULT_SQL_FILE_MAX, plan_library
+from .catalog_service import import_library, publish_library
 
 
-def publish(source: Path, destination: Path):
-    source, destination = source.resolve(), destination.resolve()
-    if not source.is_dir() or destination.exists() or source in destination.parents:
-        raise ValueError("Use an existing source and a new destination outside it")
-    files = {}
-    paths = sorted((source / "assets").rglob("*"))
-    for path in paths:
-        relative = path.relative_to(source).as_posix()
-        if path.is_symlink():
-            raise ValueError("Symlinks are not publication inputs")
-        if not path.is_file():
-            continue
-        resource_path(relative)
-        if not 0 < path.stat().st_size <= 512 * 1024 * 1024:
-            raise ValueError("Resources must be nonempty and at most 512 MiB")
-        with path.open("rb") as stream:
-            files[relative] = {
-                "size": path.stat().st_size,
-                "sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
-            }
-    if "assets/catalog.json" not in files or len(files) > 10000:
-        raise ValueError("Publication requires a catalog and at most 10000 files")
-    # Validate before creating output. A failed staging directory is never live.
-    destination.mkdir(parents=True)
-    for relative in files:
-        output = destination / relative
-        output.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source / relative, output)
-        with output.open("rb") as stream:
-            if hashlib.file_digest(stream, "sha256").hexdigest() != files[relative]["sha256"]:
-                raise ValueError("Input changed while preparing the unpublished snapshot")
-    (destination / "publication.json").write_text(
-        json.dumps({"version": 1, "files": files}, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return {"files": len(files), "destination": str(destination), "deployed": False}
+def _import(args, urls):
+    plan = plan_library(args.source, args.games, sql_file_max=args.sql_file_max_bytes)
+    if plan.errors:
+        raise ValueError("library_plan_not_ready; run board-plan-library for details")
+    engine = make_engine(urls["migrator"])
+    try:
+        return import_library(engine, plan, args.store)
+    finally:
+        engine.dispose()
+
+
+def _publish(args, urls):
+    engine = make_engine(urls["migrator"])
+    try:
+        return publish_library(engine, args.batch, args.store)
+    finally:
+        engine.dispose()
 
 
 def register_commands(commands):
-    command = commands.add_parser(
-        "board-publish-library", help="Prepare a new local public snapshot"
+    plan = commands.add_parser(
+        "board-plan-library", help="Preview legacy conversion without writes"
     )
-    command.add_argument("--source", type=Path, required=True)
-    command.add_argument("--destination", type=Path, required=True)
-    command.set_defaults(
-        needs_database=False, handler=lambda args, _: publish(args.source, args.destination)
+    plan.add_argument("--source", type=Path, required=True)
+    plan.add_argument("--games", nargs="+", help="Explicit subset of catalog slugs")
+    plan.add_argument("--sql-file-max-bytes", type=int, default=DEFAULT_SQL_FILE_MAX)
+    plan.set_defaults(
+        needs_database=False,
+        handler=lambda args, _: plan_library(
+            args.source, args.games, sql_file_max=args.sql_file_max_bytes
+        ).summary(),
     )
+
+    draft = commands.add_parser(
+        "board-import-library", help="Import a typed, unpublished SQL batch"
+    )
+    draft.add_argument("--source", type=Path, required=True)
+    draft.add_argument("--store", type=Path, required=True, help="Existing separate content store")
+    draft.add_argument("--games", nargs="+", help="Explicit subset of catalog slugs")
+    draft.add_argument("--sql-file-max-bytes", type=int, default=DEFAULT_SQL_FILE_MAX)
+    draft.set_defaults(handler=_import)
+
+    release = commands.add_parser(
+        "board-publish-library", help="Atomically publish an imported batch"
+    )
+    release.add_argument("--batch", required=True)
+    release.add_argument("--store", type=Path, required=True)
+    release.set_defaults(handler=_publish)
+
+    auto = commands.add_parser("board-auto-import-library", help="Compose startup import with logs")
+    from .catalog_startup import from_environment
+
+    auto.set_defaults(needs_database=False, handler=lambda _args, _urls: from_environment())

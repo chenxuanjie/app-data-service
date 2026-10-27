@@ -42,6 +42,41 @@ def test_development_stream_config_matches_installed_modules():
     )
 
 
+def test_automatic_library_import_keeps_three_services_and_preserves_secrets(monkeypatch):
+    from copy import deepcopy
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
+    renderer = importlib.import_module("render_stack")
+    config = renderer.stack("/volume1/test/data", "https://api.test", "https://dsm.test:5001")
+    original = deepcopy(config)
+    renderer.configure_board_library(config, "/volume2/friend/apps/board_game_agent/board-game-lib")
+    assert set(config["services"]) == {"api", "postgres", "powersync"}
+    assert config["services"]["postgres"] == original["services"]["postgres"]
+    assert config["services"]["powersync"] == original["services"]["powersync"]
+    api = config["services"]["api"]
+    for key, value in original["services"]["api"]["environment"].items():
+        if key != "APP_DATA_APPLICATIONS":
+            assert api["environment"][key] == value
+    assert api["volumes"][0]["read_only"] is True
+    assert api["volumes"][0]["bind"]["create_host_path"] is False
+    assert api["volumes"][1]["type"] == "volume"
+    assert api["volumes"][1]["source"] == "board_library_data"
+    assert config["volumes"]["board_library_data"] == {}
+    assert api["healthcheck"]["start_period"] == "10m"
+    startup = api["command"][2]
+    assert startup.index("register-applications") < startup.index("board-auto-import-library")
+    assert startup.index("board-auto-import-library") < startup.index(
+        "unset APP_DATA_MIGRATION_URL"
+    )
+    assert "cpus" not in api and "user" not in api
+    first = deepcopy(config)
+    renderer.configure_board_library(config, "/volume2/friend/apps/board_game_agent/board-game-lib")
+    assert config == first
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+    assert "chown 10001:10001 /data/board-library" in dockerfile
+    assert "USER 10001:10001" in dockerfile
+
+
 def test_full_synology_stack_has_private_database_and_stable_identity(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
     renderer = importlib.import_module("render_stack")

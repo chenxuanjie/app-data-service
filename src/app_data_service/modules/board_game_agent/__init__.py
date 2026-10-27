@@ -10,11 +10,12 @@ definition = ApplicationDefinition(
     id="board_game_agent",
     name="桌游助手",
     schema="board_game_agent",
-    public_file_areas=("library",),
+    public_file_areas=("library", "library_store"),
     capabilities={
         "sync_protocols": [1],
         "entities": list(PERSONAL),
         "public_library": True,
+        "catalog_protocols": [1],
         "community": True,
     },
     router_factory=build_router,

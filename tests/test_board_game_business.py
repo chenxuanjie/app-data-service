@@ -1,3 +1,4 @@
+import hashlib
 import json
 from uuid import uuid4
 
@@ -8,7 +9,6 @@ from sqlalchemy.exc import DBAPIError
 from test_sessions import authenticated as authenticated_fixture
 
 from app_data_service.api import create_app
-from app_data_service.modules.board_game_agent.cli import publish
 from app_data_service.modules.board_game_agent.models import favorites
 from app_data_service.store import user_transaction
 
@@ -218,7 +218,19 @@ def test_publication_is_anonymous_allowlisted_and_integrity_checked(db, tmp_path
     (source / "assets").mkdir(parents=True)
     (source / "assets/catalog.json").write_text('{"games": []}', encoding="utf-8")
     (source / "assets/rules.pdf").write_bytes(b"%PDF-fixture")
-    publish(source, output)
+    # Existing client protocol stays readable until its separate catalog cutover.
+    # Its historical fixture is not a second production publishing implementation.
+    import shutil
+
+    shutil.copytree(source, output)
+    files = {
+        p.relative_to(source).as_posix(): {
+            "size": p.stat().st_size,
+            "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+        }
+        for p in (source / "assets").iterdir()
+    }
+    (output / "publication.json").write_text(json.dumps({"version": 1, "files": files}))
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
     )

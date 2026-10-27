@@ -1,4 +1,4 @@
-> 当前开发源码新增桌游阶段 2、3：匿名公开资料、类型化个人同步和社区 API，见 [桌游业务契约](docs/board-game-business.md)。需 0012 迁移与新 PowerSync 规则；没有构建或部署本轮镜像。以下为此前阶段记录。
+> 当前开发源码包含桌游个人/社区业务，以及 [SQL 资料库、一次性导入与统一发布](docs/library-catalog.md)。资料库需要 0014 迁移，Flutter 资料读取尚未切换；本轮没有构建或部署镜像。社区与私人同步见 [桌游业务契约](docs/board-game-business.md)。以下为此前阶段记录。
 
 # Flutter 应用数据服务
 

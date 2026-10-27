@@ -26,17 +26,13 @@
 
 评论时间由服务器生成；每账号最新的带评分根评论参与平均分，删除该评论不会恢复旧评分。点赞表达目标开/关状态。公开响应不返回私人数据集、内部用户 ID 或凭据；含本人状态的响应禁止缓存。
 
-## 公开快照
+## 资料发布入口（2026-10-27 更新）
 
-准备一个只包含要公开资料的本地源目录，内部含 `assets/catalog.json` 和显式资源；不要直接把未经整理的工程、账号目录或整个 NAS 共享目录设为输入。支持 JSON、PDF、MD、TXT、PNG/JPEG/WebP/SVG，拒绝 `docs/others`、隐藏/越级路径、软链接、空文件和超限文件。
+新资料改用 [SQL 资料库与统一发布服务](library-catalog.md)：只读预览 → 类型化 SQL 草稿与内容寻址文件存储 → 原子发布。使用 `board-plan-library`、`board-import-library`、`board-publish-library --batch` 三条维护命令；旧的 `--source --destination` 快照生成实现已移除。
 
-```powershell
-.venv/Scripts/app-data.exe board-publish-library --source C:/prepared/board-content --destination C:/prepared/board-public-new
-```
+日常 NAS 部署已通过 Compose 启动命令自动编排上述步骤，不要求用户执行三条维护命令；api 日志列出每个桌游、小文件入 SQL 与发布完成状态。默认 4 MiB 内原件还保存为 SQL 原文/文本/JSON，缺失和未知附加字段保留并警告。原资料只读挂载，新资料使用自动创建的专用命名卷，维持三个常驻服务；具体配置和重启行为见上述协议。
 
-目标目录必须不存在，且不能放在源目录内。工具校验、复制和复核后写 `publication.json`（版本 1，每项路径对应 SHA-256 和大小），不读取 DSM、不联网、不部署、不覆盖旧快照。失败的暂存目录不会成为正在提供的目录。资料的来源、版次和许可仍由整理发布者核实。
-
-API 只读这个快照；不需要用户 NAS 凭据。一次文件版本校验可供后续 Range 请求复用，文件元数据变化即重新验证，不会为每段 PDF 重新哈希整本书。服务器安全响应头禁止资源脚本执行。
+新 `/catalog` 直接查询 SQL。当前客户端尚未切换，表中旧 `/library` 及已有只读快照继续提供现有读取；它们不是新发布的回退或双写路径。阶段切换时移除旧读取实现。原始资料和历史状态的保留、维护连接要求及新 `library_store` 挂载配置见上述专项说明。
 
 ## 配置与下一次部署
 

@@ -5,6 +5,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from app_data_service.models import Base
 
+from . import catalog_models  # noqa: F401 - register library metadata with the module
+
 SCHEMA = "board_game_agent"
 
 public_changes = sa.Table(

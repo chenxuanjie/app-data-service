@@ -169,7 +169,9 @@ def install(router):
                 return JSONResponse(
                     {
                         "error": {
-                            "message": "Loomex request unavailable; retry or select another model service.",
+                            "message": (
+                                "Loomex request unavailable; retry or select another model service."
+                            ),
                             "type": "loomex_error",
                             "code": "loomex_upstream_unavailable",
                         }
