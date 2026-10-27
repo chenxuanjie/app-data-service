@@ -17,12 +17,14 @@ from app_data_service.store import user_transaction
 
 from . import business
 from .library import PublishedLibrary
+from .loomex import install as install_loomex
 
 PREFIX = "/v1/apps/board_game_agent"
 
 
 def build_router(runtime):
     router = application_router("board_game_agent")
+    install_loomex(router)
     settings = runtime.application_settings.get("board_game_agent", {})
     library = PublishedLibrary(settings.get("public_file_roots", {}).get("library"))
 
