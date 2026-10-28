@@ -7,7 +7,9 @@
 - 每个请求/连接/锁等待必须有界。金额使用 Decimal/NUMERIC，禁止静默舍入。
 - 客户端不能持有数据库账号。数据库运行角色无 DDL/超级用户权限。
 - 账号与数据集隔离由服务端授权和 PostgreSQL RLS 共同验证。
-- 修改后执行 ruff check、ruff format --check、完整 pytest；数据库测试不得跳过后声称通过。
+- 修改程序、修复缺陷或调整测试/构建脚本后，执行 ruff check、ruff format --check、完整 pytest；数据库测试不得跳过后声称通过。仅构建、打包、导出或推送已有源码不自动追加全量测试，保留产物校验和必要启动冒烟。
+- 本机固定方案：Windows PowerShell 发起命令；Ubuntu WSL 运行 Docker/PostgreSQL；Windows 项目 `.venv` 通过 `tools/run_checks.py` 运行 ruff/pytest。预检失败先报告原因，不自动切到 WSL 跑测试或临时安装另一套依赖。
+- 长任务采用宽松预算：pytest 2 小时、单镜像构建 4 小时、导入/导出 1 小时；外层包装器和 WSL 租约不能先到期。不因几分钟无输出取消任务。连接、锁等待及生产请求仍使用各自独立的有界预算。
 - 普通开发不自动提交 Git；用户于 2026-10-21 要求正式交付前提交，后续正式发布请求包含本次交付必要的相关提交。采用中文 Conventional Commits，不夹带其他任务；修改约束本身不授权提交已有业务改动。
 - 按 [Git Flow 约定](docs/git-flow.md) 开发：main 保留发布版本，develop 集成，feature/* 承载阶段工作；未验收功能不合入 main。
 

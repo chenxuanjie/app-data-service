@@ -7,23 +7,25 @@ contract without registering a fake Flutter project or touching NAS.
 
 import argparse
 import base64
-import gzip
 import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tarfile
+import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 import yaml
+from archive_cache import cached_dependency
 from docker_runtime import docker_runtime
-from render_stack import api_start_command
+from image_archives import validate_archive as validate_archive
+from render_stack import remove_board_library_startup
 from render_sync_config import render as render_sync_config
+from task_diagnostics import TaskLog
 
 from app_data_service.modules.registry import installed_applications
 
@@ -40,52 +42,6 @@ def source_fingerprint():
     for path in sources:
         digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0" + path.read_bytes())
     return digest.hexdigest()
-
-
-def validate_archive(path, expected_tag, expected_image_id):
-    """Reject wrong images/platforms and incomplete archives before delivery."""
-    with tarfile.open(path, "r:gz") as archive:
-        manifest = json.load(archive.extractfile("manifest.json"))
-        if len(manifest) != 1 or manifest[0].get("RepoTags") != [expected_tag]:
-            raise ValueError("Archive must contain exactly its designated image tag")
-        entry = manifest[0]
-        config_bytes = archive.extractfile(entry["Config"]).read()
-        config = json.loads(config_bytes)
-        if config["os"] != "linux" or config["architecture"] != "amd64":
-            raise ValueError("Unexpected archived image platform")
-        config_id = "sha256:" + hashlib.sha256(config_bytes).hexdigest()
-
-        def references_config(identity, visited):
-            if identity == config_id:
-                return True
-            if identity in visited or not identity.startswith("sha256:"):
-                return False
-            visited.add(identity)
-            try:
-                payload = archive.extractfile(
-                    "blobs/sha256/" + identity.removeprefix("sha256:")
-                ).read()
-            except KeyError:
-                return False
-            if "sha256:" + hashlib.sha256(payload).hexdigest() != identity:
-                return False
-            descriptor = json.loads(payload)
-            if descriptor.get("config", {}).get("digest") == config_id:
-                return True
-            return any(
-                references_config(child["digest"], visited)
-                for child in descriptor.get("manifests", [])
-            )
-
-        # Classic IDs identify configs; Docker 29's containerd store can instead
-        # identify an OCI manifest/index. Bind either to the same image config.
-        if not references_config(expected_image_id, set()):
-            raise ValueError("Archived image identity differs from inspected image")
-        if not entry["Layers"]:
-            raise ValueError("Image layers are missing")
-        for layer in entry["Layers"]:
-            if not archive.getmember(layer).isfile():
-                raise ValueError("Image layer is missing")
 
 
 def update_sync_rules(configuration: dict, content: str) -> None:
@@ -127,12 +83,40 @@ def main():
     parser.add_argument(
         "--docker", choices=["native", "wsl"], default="wsl" if os.name == "nt" else "native"
     )
+    parser.add_argument(
+        "--force-reexport",
+        action="store_true",
+        help="Ignore dependency archive cache and re-export all images",
+    )
     args = parser.parse_args()
-    with docker_runtime(args.docker):
-        build(args)
+    if args.api_only and args.force_reexport:
+        parser.error("--force-reexport requires a full bundle, not --api-only")
+    log = TaskLog(ROOT, "docker-build")
+    try:
+        with docker_runtime(args.docker):
+            if args.docker == "wsl":
+                log.run(
+                    "local-environment-ready",
+                    [
+                        sys.executable,
+                        str(ROOT / "tools/local_environment.py"),
+                        "--purpose",
+                        "build",
+                    ],
+                    timeout=900,
+                    cwd=ROOT,
+                )
+            build(args, log=log)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        if isinstance(error, RuntimeError):
+            print(str(error), file=sys.stderr)
+        print(f"Build stopped: {type(error).__name__}. See {log.directory}", file=sys.stderr)
+        return 1
+    return 0
 
 
-def build(args):
+def build(args, log=None):
+    log = log or TaskLog(ROOT, "docker-build")
     docker = ["wsl", "-d", "Ubuntu", "--exec", "docker"] if args.docker == "wsl" else ["docker"]
 
     def linux(path):
@@ -145,7 +129,35 @@ def build(args):
         )
 
     def run(command, **kwargs):
-        return subprocess.run(command, check=True, cwd=ROOT, **kwargs)
+        # Only executable/subcommand names go into diagnostics; arguments can
+        # contain private paths. Resolved Compose output keeps its private sink.
+        if "buildx" in command:
+            name = "image-build" if "build" in command else "buildx-preflight"
+        elif "pip" in command:
+            name = "dependency-download"
+        elif any("build_preflight.py" in str(part) for part in command):
+            name = "proxy-registry-preflight"
+        elif any("docker_archive_worker.py" in str(part) for part in command):
+            name = "image-archive"
+        elif "save" in command:
+            name = "image-export"
+        elif "load" in command:
+            name = "image-import"
+        elif str(ROOT / "tools/verify_stack.py") in command:
+            name = "stack-validation"
+        else:
+            name = "docker-preflight" if "info" in command else "compose-validation"
+        return log.run(name, command, timeout=kwargs.pop("timeout", 120), cwd=ROOT, **kwargs)
+
+    run([*docker, "info", "--format", "{{.OSType}}"], timeout=120)
+    run([*docker, "buildx", "version"], timeout=120)
+    network_script = ROOT / "tools/build_preflight.py"
+    network_command = (
+        [*docker[:-1], "python3", linux(network_script)]
+        if args.docker == "wsl"
+        else [sys.executable, str(network_script)]
+    )
+    run(network_command, timeout=180)
 
     configuration = yaml.safe_load(args.compose.read_text(encoding="utf-8"))
     if set(configuration["services"]) != {"postgres", "api", "powersync"}:
@@ -213,7 +225,7 @@ def build(args):
                 "-r",
                 str(ROOT / "requirements-runtime.lock"),
             ],
-            timeout=180,
+            timeout=3600,
         )
         run(
             [
@@ -236,11 +248,11 @@ def build(args):
                 linux(ROOT / "Dockerfile"),
                 linux(ROOT),
             ],
-            timeout=240,
+            timeout=14400,
         )
     images = [image, "postgres:17.11-bookworm", "journeyapps/powersync-service:1.27.0"]
     inspected = json.loads(
-        subprocess.check_output([*docker, "image", "inspect", *images], text=True, timeout=15)
+        subprocess.check_output([*docker, "image", "inspect", *images], text=True, timeout=120)
     )
     if any(item["Os"] != "linux" or item["Architecture"] != "amd64" for item in inspected):
         raise RuntimeError("Unexpected image platform")
@@ -258,38 +270,84 @@ def build(args):
         "postgresql-" + images[1].rsplit(":", 1)[1].split("-", 1)[0] + ".tar.gz",
         "powersync-" + images[2].rsplit(":", 1)[1] + ".tar.gz",
     ]
+    output = ROOT / "release"
+    previous_path = output / "metadata/release.json"
+    previous = (
+        json.loads(previous_path.read_text(encoding="utf-8")) if previous_path.exists() else None
+    )
+    reused_archives, rebuilt_archives, archive_actions = [], [], []
     for index, (name, tag, identity) in enumerate(zip(names, images, image_ids, strict=True)):
-        if args.api_only and index != 0:
-            continue
-        raw = staging / (name + ".tar")
         filename = filenames[index]
+        started = time.monotonic()
+        record, reason = (
+            None,
+            "forced dependency re-export" if index != 0 else "API always exported",
+        )
+        if index != 0 and not args.force_reexport:
+            record, reason = cached_dependency(previous, output, tag, identity, filename)
+        if record:
+            print("Reusing validated " + name + " archive: " + reason, flush=True)
+            archives.append(record)
+            reused_archives.append(filename)
+            archive_actions.append(
+                {
+                    "component": name,
+                    "action": "reused",
+                    "reason": reason,
+                    "seconds": round(time.monotonic() - started, 3),
+                }
+            )
+            continue
+        if args.api_only and index != 0:
+            raise ValueError(
+                "Dependency cache is unavailable: " + reason + "; create a full bundle"
+            )
+        print("Exporting " + name + ": " + reason, flush=True)
         compressed = delivery / filename
-        print("Exporting " + name, flush=True)
-        run([*docker, "image", "save", "--output", linux(raw), tag], timeout=180)
-        with raw.open("rb") as source, compressed.open("wb") as destination:
-            with gzip.GzipFile(filename="", fileobj=destination, mode="wb", mtime=0) as zipped:
-                shutil.copyfileobj(source, zipped, length=4 * 1024 * 1024)
-        validate_archive(compressed, tag, identity)
-        run([*docker, "image", "load", "--input", linux(compressed)], timeout=180)
-        loaded = subprocess.check_output(
-            [*docker, "image", "inspect", "--format", "{{.Id}}", tag], text=True, timeout=15
-        ).strip()
-        if loaded != identity:
-            raise RuntimeError("Loaded image identity differs from the original")
-        with compressed.open("rb") as file:
-            digest = hashlib.file_digest(file, "sha256").hexdigest()
+        worker_report = staging / (name + "-archive.json")
+        worker = ROOT / "tools/docker_archive_worker.py"
+        worker_command = (
+            [*docker[:-1], "python3", linux(worker)]
+            if args.docker == "wsl"
+            else [sys.executable, str(worker)]
+        )
+        run(
+            [
+                *worker_command,
+                "--image",
+                tag,
+                "--identity",
+                identity,
+                "--destination",
+                linux(compressed),
+                "--report",
+                linux(worker_report),
+            ],
+            timeout=10800,
+        )
+        result = json.loads(worker_report.read_text(encoding="utf-8"))
         archives.append(
             {
                 "component": name,
                 "file": filename,
                 "image": tag,
                 "imageId": identity,
-                "size": compressed.stat().st_size,
-                "sha256": digest,
+                "size": result["size"],
+                "sha256": result["sha256"],
                 "importVerified": True,
             }
         )
-        raw.unlink()
+        rebuilt_archives.append(filename)
+        archive_actions.append(
+            {
+                "component": name,
+                "action": "exported",
+                "reason": reason,
+                "seconds": round(time.monotonic() - started, 3),
+                "workspace": result["workspace"],
+                "timings": result["timings"],
+            }
+        )
     # Run against the images imported from the compressed archives, not the old TAR.
     run(
         [
@@ -305,12 +363,12 @@ def build(args):
             str(details / "validation.json"),
             *([] if args.full_validation else ["--smoke-only"]),
         ],
-        timeout=360,
+        timeout=14400,
     )
     if original is None:
         update_sync_rules(configuration, render_sync_config())
     configuration["services"]["api"]["image"] = image
-    configuration["services"]["api"]["command"] = api_start_command()
+    remove_board_library_startup(configuration)
     for service in configuration["services"].values():
         service["pull_policy"] = "never"
     rendered = delivery / "docker-compose.yml"
@@ -322,29 +380,12 @@ def build(args):
         run(
             [*docker, "compose", "-f", linux(rendered), "config", "--format", "json"],
             stdout=private,
-            timeout=20,
+            timeout=120,
         )
-    updated_archives = [item["file"] for item in archives]
-    output = ROOT / "release"
-    previous_path = output / "metadata/release.json"
-    previous = (
-        json.loads(previous_path.read_text(encoding="utf-8")) if previous_path.exists() else None
-    )
-    if args.api_only:
-        # Keep a complete, current install set locally while marking only API
-        # for transfer. Reuse dependencies only when their IDs and hashes match.
-        if previous is None:
-            raise ValueError("Create a full delivery before an API-only update")
-        for tag, identity in zip(images[1:], image_ids[1:], strict=True):
-            record = next(item for item in previous["archives"] if item["image"] == tag)
-            if record["imageId"] != identity:
-                raise ValueError("Dependency changed; create a full delivery instead")
-            with (output / record["file"]).open("rb") as file:
-                if hashlib.file_digest(file, "sha256").hexdigest() != record["sha256"]:
-                    raise ValueError("Cached dependency archive checksum mismatch")
-            archives.append(record)
+    updated_archives = rebuilt_archives if args.api_only else [item["file"] for item in archives]
     metadata = {
         "schemaVersion": 2,
+        "composePath": str(output / "docker-compose.yml"),
         "deliveryKind": "api-update" if args.api_only else "first-install",
         "version": version,
         "sourceRevision": original["sourceRevision"] if original else revision,
@@ -359,6 +400,9 @@ def build(args):
         "imageIds": image_ids,
         "archives": archives,
         "updatedArchives": updated_archives,
+        "reusedArchives": reused_archives,
+        "rebuiltArchives": rebuilt_archives,
+        "archiveActions": archive_actions,
         "totalSize": sum(item["size"] for item in archives),
         "packagedAt": datetime.now(UTC).isoformat(),
         "realNasDeployed": False,
@@ -370,6 +414,14 @@ def build(args):
     )
     shutil.copyfile(ROOT / "docs/release-guide.md", delivery / "README.md")
     output.mkdir(parents=True, exist_ok=True)
+    # Recheck reused deliverables before promotion in case another task changed them.
+    for record in archives:
+        if record["file"] in reused_archives:
+            verified, _ = cached_dependency(
+                previous, output, record["image"], record["imageId"], record["file"]
+            )
+            if verified is None:
+                raise ValueError("Reused archive changed during build; previous delivery preserved")
     # Promote only after every compressed archive and the live stack have passed.
     for path in delivery.rglob("*"):
         if path.is_file():
@@ -393,7 +445,9 @@ def build(args):
         if unchanged:
             old.unlink()
     print(json.dumps(metadata), flush=True)
+    compose_path = (output / "docker-compose.yml").as_posix()
+    print(f"Compose: [docker-compose.yml]({compose_path})", flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

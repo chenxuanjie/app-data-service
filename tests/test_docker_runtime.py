@@ -20,7 +20,7 @@ def test_wsl_lease_releases_only_its_child_on_success_or_failure(runtime, monkey
 
     def launch(command, **kwargs):
         assert command[:5] == ["wsl", "-d", "Ubuntu", "--exec", "bash"]
-        assert "-t 3600" in command[-1]
+        assert "-t 86400" in command[-1]
         child = original(
             [sys.executable, "-u", "-c", "import sys; print('ready'); sys.stdin.readline()"],
             **kwargs,

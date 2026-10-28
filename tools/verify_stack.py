@@ -174,9 +174,19 @@ def verify(args):
     try:
         started = True
         subprocess.run(
-            [*compose, "up", "-d", "--wait", "--wait-timeout", "60", "--pull", "never", "postgres"],
+            [
+                *compose,
+                "up",
+                "-d",
+                "--wait",
+                "--wait-timeout",
+                "300",
+                "--pull",
+                "never",
+                "postgres",
+            ],
             check=True,
-            timeout=80,
+            timeout=600,
         )
         stage = "migration_failure_guard"
         failed_start = subprocess.run(
@@ -205,9 +215,9 @@ def verify(args):
         report["migration_failure_prevents_api_start"] = True
         stage = "stack_startup"
         subprocess.run(
-            [*compose, "up", "-d", "--wait", "--wait-timeout", "90", "--pull", "never"],
+            [*compose, "up", "-d", "--wait", "--wait-timeout", "300", "--pull", "never"],
             check=True,
-            timeout=110,
+            timeout=600,
         )
         services = subprocess.check_output(
             [*compose, "ps", "--services", "--filter", "status=running"], text=True, timeout=15
@@ -353,7 +363,7 @@ def verify(args):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=180,
+                timeout=7200,
             )
             (directory / "dart.log").write_text(result.stdout + result.stderr, encoding="utf-8")
             if result.returncode:
@@ -377,10 +387,10 @@ def verify(args):
                     "postgres",
                     "--wait",
                     "--wait-timeout",
-                    "40",
+                    "300",
                 ],
                 check=True,
-                timeout=55,
+                timeout=600,
             )
             stored = subprocess.check_output(
                 [
@@ -414,10 +424,10 @@ def verify(args):
                     "api",
                     "--wait",
                     "--wait-timeout",
-                    "40",
+                    "300",
                 ],
                 check=True,
-                timeout=55,
+                timeout=600,
             )
             refreshed = client.post(
                 "http://127.0.0.1:18380/v1/auth/refresh",
