@@ -57,7 +57,9 @@ def register_commands(commands):
     release.add_argument("--store", type=Path, required=True)
     release.set_defaults(handler=_publish)
 
-    auto = commands.add_parser("board-auto-import-library", help="Compose startup import with logs")
+    auto = commands.add_parser(
+        "board-auto-import-library", help="Explicit one-time configured import with logs"
+    )
     from .catalog_startup import from_environment
 
     auto.set_defaults(needs_database=False, handler=lambda _args, _urls: from_environment())

@@ -1,4 +1,4 @@
-"""Compose-controlled import with committed SQL progress and persistent restart idempotency."""
+"""Explicit import job with committed SQL progress and persistent idempotency."""
 
 import json
 import os
@@ -204,7 +204,7 @@ def run_import(
                 source_files=total,
                 sql_small_files=inline,
                 warnings=len(plan.warnings),
-                message="资料已入库并发布；本编号下次启动将直接跳过",
+                message="资料已入库并发布；本编号再次执行将直接跳过",
             )
             return {
                 "status": "completed",
@@ -240,7 +240,7 @@ def from_environment():
                 str(error) if re.fullmatch(r"[a-z_]{1,100}", str(error)) else type(error).__name__
             )
         emit(
-            "failed", code=code, message="资料导入失败，未自动清理；API 将继续启动，请检查此前日志"
+            "failed", code=code, message="资料导入失败，未自动清理；已发布资料保留，请检查此前日志"
         )
         return {"board_library_import": "failed", "code": code}
     finally:

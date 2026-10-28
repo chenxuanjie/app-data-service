@@ -1,3 +1,10 @@
+2026-10-28 移除已完成的旧资料导入启动检查：
+
+- API 启动命令保留数据库结构升级、应用注册及维护变量清除，移除旧资料自动导入调用。配套生成器和打包器同步移除导入环境参数、只读源目录挂载及导入专用健康检查宽限；已发布资料卷、其他应用配置和凭据保持原值。
+- ruff check、127 个 Python 文件的格式检查及真实 PostgreSQL 完整 **314 项 pytest 通过**，没有跳过数据库测试；保留已有 Starlette TestClient 弃用提示。新增回归覆盖长/短格式源挂载清理、自定义资料卷保留和重复执行不改变配置。
+- 从现有交付 Compose 生成私有 `.local/board-library-runtime.yaml`，逐项确认除启动钩子清理外配置不变，真实 Docker Compose `config --quiet` 和 Linux `sh -n` 通过。保留现有镜像标签、数据库/签名凭据、应用存储和数据卷。未改写旧交付文件及其来源摘要。
+- 本项仅更新 Compose 即可停用旧镜像的导入启动调用。未构建镜像、提交、上传或部署，未修改 NAS 或生产数据库。
+
 2026-10-27 Compose 自动导入与小文件原文 SQL 保留：
 
 - 最终 ruff check 和 115 个 Python 文件格式检查通过；真实 PostgreSQL 随机隔离库完整 **278 项 pytest 通过**，无数据库跳过，保留已有 Starlette TestClient 弃用提示。

@@ -88,6 +88,11 @@ def test_startup_import_publishes_logs_then_skips_without_reading_source(
     db, catalog, tmp_path, monkeypatch
 ):
     source, store = inputs(tmp_path)
+    # Exact NAS directory from the failed deployment, including the underscore.
+    metadata = source / "assets/games/first/._DAV"
+    metadata.mkdir()
+    (metadata / "game.json.dir").write_bytes(b"WebDAV metadata directory index")
+    (metadata / "game.json.pag").write_bytes(b"WebDAV metadata pages")
     messages = []
 
     def log(stage, **values):
@@ -95,6 +100,12 @@ def test_startup_import_publishes_logs_then_skips_without_reading_source(
 
     result = startup.run_import(db.migrator, source, store, log=log)
     assert result["status"] == "completed" and result["games"] == 1
+    assert {
+        "stage": "warning",
+        "game": "first",
+        "code": "source_metadata_skipped",
+        "path": "assets/games/first/._DAV",
+    } in messages
     assert any(r["stage"] == "sql_file_saved" for r in messages)
     game = next(r for r in messages if r["stage"] == "game_in_database")
     assert game["title"] == "桌游first" and game["resource_records"] == 9
@@ -107,6 +118,15 @@ def test_startup_import_publishes_logs_then_skips_without_reading_source(
     assert messages[-1]["stage"] == "skipped_completed"
     with db.migrator.connect() as c:
         assert c.scalar(sa.select(sa.func.count()).select_from(m.releases)) == 2
+        assert (
+            c.scalar(
+                sa.select(sa.func.count())
+                .select_from(m.source_files)
+                .where(m.source_files.c.path.like("%/._DAV/%"))
+            )
+            == 0
+        )
+    assert (metadata / "game.json.pag").read_bytes() == b"WebDAV metadata pages"
 
 
 def test_inline_limit_and_new_volume_are_honored_without_duplicate_publication(

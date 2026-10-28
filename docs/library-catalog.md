@@ -26,6 +26,7 @@
 - 禁用、`missing`、`superseded`、`blocked`、`aiEnabled: false` 和历史 validation 都保留，状态与“这次源目录是否找到文件”分别保存。无法解析的历史检查日期仍保留原文。
 - 旧 `cover/background/gallery` 类型转为图片加 `image_role`，同时保留原类型；尺寸、变体、来源 URL、备注、派生引用均保存。无法解析的派生引用保留原值并警告，不猜测替代。
 - ZIP、`docs/others` 和游戏目录内未登记文件作为归档保留文件和登记，不自动加入公开资料或 AI 输入。HTML 可以登记，但下载使用 attachment、nosniff 和 sandbox，不能在 API 源下执行脚本。
+- NAS 的 `._DAV`（本次实际目录名，含下划线）、`.DAV`、`@eaDir` 是服务元数据，导入枚举在进入这些目录之前跳过，并记录 `source_metadata_skipped` 警告；不复制到资料卷或 SQL，也不删除源文件。清单显式引用这些目录仍会阻断；其他隐藏目录/文件不一概忽略，非法路径错误会附上可安全记录的源相对 `path`，避免只看到 `invalid_relative_path` 却无法定位。资料目录无权限仍按失败处理，不冒充空目录。
 - 缺文件仍保存登记、原始状态和缺失观察结果，并记录警告，不阻断整批入库；没有文件对象的资源不进入公开下载列表。工具不自动下载缺失文件，源目录的缺失观察不能扩大为对其他位置的判断。
 - `documents: null` 表示无文档绑定，原值保留在审计快照；顶层本地化字段若存在没有对应 locale 的语言会阻断，避免遗漏。未登记文件不会凭文件名获得 AI 权限。
 
@@ -35,45 +36,29 @@
 
 较大的文件继续保存在资料卷，数据库保存登记与摘要。全部原件仍复制到资料卷，以支持现有的 Range 下载与完整性检查；这是本阶段的完整保留策略，后续修剪另行实施，不能只备份数据库而遗漏大文件资料卷。
 
-## 只通过 Compose 启动
+## 已导入后的日常启动
 
-使用包含本轮源码的新 API 镜像，以及已经接入启动钩子的配套 Compose；旧镜像不含命令，单独修改挂载不能替代更新镜像。维持 postgres、api、powersync 三个常驻服务，不创建一个已退出的迁移/导入服务。
+2026-10-28，用户已完成 NAS 首次导入：发布版本 1、24 个桌游。API 日常启动不再运行旧资料导入命令，也不再查询导入完成标记、输出逐桌游入库日志或访问原 NAS 资料源。
 
-已只读核对用户 Y 盘：实际资料根目录为 `Y:\friend\apps\board_game_agent\board-game-lib`，有 24 个桌游和 `assets/catalog.json`。按已记录的 NAS 共享卷映射，挂载源为 `/volume2/friend/apps/board_game_agent/board-game-lib`；现有数据库项目仍是 `/volume1/docker/PostgreSQL`。没有修改 Y 盘或 NAS 配置。
+启动顺序为：升级数据库结构 → 注册应用 → 清除维护连接变量 → 启动 API。数据库结构升级仍服务于后续版本新增表/字段；与这次已完成的一次性资料导入分开。维持 postgres、api、powersync 三个常驻服务。
 
-配套 Compose 在 `api.environment` 保存以下字段：
+配套 Compose 移除 `board-auto-import-library` 启动调用和以下导入参数：`APP_DATA_BOARD_LIBRARY_SOURCE`、`APP_DATA_BOARD_LIBRARY_STORE`、`APP_DATA_BOARD_LIBRARY_IMPORT_ID`、`APP_DATA_BOARD_LIBRARY_SQL_MAX_BYTES`。同时移除 `/import/board-library` 源目录挂载及导入专用的 10 分钟健康检查宽限。
 
-```yaml
-APP_DATA_BOARD_LIBRARY_SOURCE: /import/board-library
-APP_DATA_BOARD_LIBRARY_STORE: /data/board-library
-APP_DATA_BOARD_LIBRARY_IMPORT_ID: initial
-APP_DATA_BOARD_LIBRARY_SQL_MAX_BYTES: '4194304'
+必须保留原来的资料存储挂载（本部署为 `board_library_data` → `/data/board-library`）以及 `APP_DATA_APPLICATIONS.board_game_agent.public_file_roots.library_store`。图片、PDF 仍通过该存储提供；不重新创建、改名或删除现有卷，不删除 PostgreSQL 中的导入标记、历史和已发布资料。其他服务、组权限、数据库凭据、签名密钥、应用配置和端口保持原值。
+
+本项启动流程由 Compose 的 `command` 决定，镜像默认命令本来就只启动 API。因此对于当前已成功导入的部署，更新配套 Compose 并重建 API 容器即可生效，不必为了移除这次检查单独重建镜像。使用更新后的打包器时，也会清理输入 Compose 中遗留的导入启动参数和挂载，避免下次交付恢复旧钩子。
+
+可在本地生成配置：
+
+```powershell
+.venv/Scripts/python.exe tools/configure_board_library.py --compose <现有私有YAML> --output <新的私有YAML>
 ```
 
-源目录用只读 bind 挂载至 `/import/board-library`，要求宿主路径已存在。新文件存储使用 `board_library_data` 命名卷，Docker 自动创建；镜像预先将挂载点归属设为 UID/GID 10001，不更改 NAS 原目录的权限或所有者。API 的 `APP_DATA_APPLICATIONS` 同时声明 `library_store=/data/board-library`，由配置工具合并，不能覆盖 Zheri 或原有应用配置。
-
-启动顺序：升级数据库 → 注册应用 → 自动预览/导入/发布 → 清除维护连接变量 → 启动 API。迁移、注册及导入子进程使用维护连接，API 使用运行角色。新卷在导入阶段需要可写，API 不提供资料写入接口；其他公开目录继续保持只读挂载。健康检查初始宽限为 10 分钟，适用于首次导入。
-
-用户只需更新镜像及 Compose，启动同一个 Container Manager 项目，然后打开 **api 容器日志**。日志含以下阶段，不打印正文、密码、Key 或连接字符串：
-
-| stage | 含义 |
-| --- | --- |
-| `planning` / `plan_ready` | 正在读取资料及预览计数 |
-| `warning` / `input_error` | 缺失文件、附加字段或阻断问题 |
-| `sql_file_saved` | 一个小文件的原文已提交到 SQL，带路径、大小、类型 |
-| `draft_saved` | 类型化草稿已入库 |
-| `game_in_database` | 逐桌游显示名称、资源登记数、小文件入 SQL 数、缺失/归档数 |
-| `completed` | 该编号已导入、发布并保存完成记录，含版本和总数 |
-| `skipped_completed` | 普通重启复用完成记录，没有重新扫描源目录 |
-| `failed` | 导入失败；保留已发布数据和重试条件，API 继续启动 |
-
-普通重启不会重复扫描、重复发布。需要重新读取更新后的 NAS 资料时，只修改 Compose 的 `APP_DATA_BOARD_LIBRARY_IMPORT_ID`，如 `initial` 改为 `library-2`，重建 API 容器即可。修改小文件大小阈值也会触发重新核对；阈值可设 0–16 MiB，降低阈值不会自动删除之前的 SQL 原文。更换/丢失资料卷会自动重新复制原件，避免只看数据库标记就跳过一个空卷。
-
-工具 `tools/configure_board_library.py --compose <现有私有YAML> --source <NAS实际路径> --output <新的私有YAML>` 可准备构建输入，保留数据库凭据、签名密钥和其他服务配置，拒绝覆盖原文件。它只在本地生成文件；不上传、启动或部署。不要重新生成整套随机密码来增加挂载。
+工具只生成新 YAML，拒绝覆盖原文件，不上传或修改 NAS。再次重启不再触发资料入库；未来新增/更新资料使用明确的导入与发布维护任务。
 
 ## 可选维护命令
 
-以下是排障和开发使用的底层命令；日常 NAS 启动已经自动编排，不要求用户进入终端手动执行。
+以下命令仅在明确需要新增或重新导入资料时执行；日常 API 启动不调用它们。
 
 先准备源目录和**另外一个已存在的内容存储目录**。两者不得相同或互为父子，不接受软链接/junction、隐藏/越级路径。单文件非空且不超过 512 MiB，单 JSON 不超过 4 MiB，每批 JSON 合计不超过 64 MiB，每批不超过 10000 个资源或文件；超出时显式分批。
 
@@ -104,7 +89,7 @@ APP_DATA_BOARD_LIBRARY_SQL_MAX_BYTES: '4194304'
 
 API 运行角色对资料公开表只有 SELECT，并经应用 RLS 过滤草稿、禁用版次及不可公开资源；原文同样受资源 RLS 控制，源文件映射、导入完成标记和审计表不授予运行角色访问权。事务上限 20 秒，连接、锁和语句等待沿用公共有界配置。导入期间的长会话锁不跨源文件 IO 保持 SQL 事务，防止同时启动两个导入任务。
 
-内容对象不可变；文件元数据变化时重新验证，完整性失败返回 503。启动自动导入使用专用可写卷，正常 API 业务仅提供读取。新版本 PDF 可继续用已发布的 `version=sha256` 完成旧版本读取，但资源/版次撤下后返回 404；不能用已知摘要访问草稿或归档。
+内容对象不可变；文件元数据变化时重新验证，完整性失败返回 503。显式资料导入任务使用专用可写卷，正常 API 业务仅提供读取。新版本 PDF 可继续用已发布的 `version=sha256` 完成旧版本读取，但资源/版次撤下后返回 404；不能用已知摘要访问草稿或归档。
 
 ## 公开 API 契约
 
@@ -129,8 +114,6 @@ API 运行角色对资料公开表只有 SELECT，并经应用 RLS 过滤草稿�
 
 ## 后续接线与验证
 
-下次部署需要包含本轮尚未发布的 0014 定义和新启动命令的 API 镜像及配套 Compose。新增表仍属于未交付的 0014：`file_bodies`、`source_files`、`import_runs`，没有对 NAS 执行迁移。PostgreSQL / PowerSync 基础镜像及当前同步流没有修改。现有 Compose 的密码、密钥、数据目录不得重新生成。
-
-当前客户端仍读旧 `/library`，该只读服务暂留至下一阶段的客户端替换；新 `/catalog` 不回读旧清单、没有新旧双写。新存储配置缺失会明确返回文件不可用，不回退到旧目录。下一阶段统一切换客户端目录、详情、文档选择及缓存版本，再移除已被替换的旧读取实现。
+NAS 已完成本轮资料结构及首次导入；不能把数据库已完成部署等同于新客户端安装包已交付。Flutter 客户端源码已切换到新 `/catalog`，详见桌游工程的 `docs/catalog-client.md`；设备安装验收与 Web 同源部署另行完成。服务端旧 `/library` 只读入口的后续移除不属于本次启动钩子清理。
 
 `tests/test_board_catalog.py` 在随机命名的真实 PostgreSQL 测试库验证导入保留、草稿隐藏、原子发布、幂等、冲突、局部合并、RLS、文件版本/撤下、PDF Range 和失败保留。实际 NAS 导入、产物构建和设备验收必须另外记录，不以测试库结果代替。

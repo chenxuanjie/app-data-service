@@ -27,9 +27,6 @@ def api_start_command():
         "-ec",
         'APP_DATA_DATABASE_URL="$$APP_DATA_MIGRATION_URL" app-data migrate\n'
         'APP_DATA_DATABASE_URL="$$APP_DATA_MIGRATION_URL" app-data register-applications\n'
-        'APP_DATA_DATABASE_URL="$$APP_DATA_MIGRATION_URL" app-data board-auto-import-library || '
-        'printf \'%s\\n\' \'{"event":"board_library_import","stage":"failed",'
-        '"code":"process_failed"}\'\n'
         "unset APP_DATA_MIGRATION_URL\n"
         "exec python -m uvicorn app_data_service.api:from_environment --factory "
         "--host 0.0.0.0 --port 8000 --no-access-log --no-proxy-headers",
@@ -49,7 +46,7 @@ def stack(
     dsm_lan_ip=None,
     application_settings=None,
     public_mounts=None,
-    board_library_source=None,
+    board_library=False,
 ):
     parsed = urlsplit(origin)
     if (
@@ -212,48 +209,51 @@ REVOKE ALL ON DATABASE powersync_storage FROM PUBLIC;
     }
     for service in configuration["services"].values():
         service["platform"] = "linux/amd64"
-    if board_library_source:
-        configure_board_library(configuration, board_library_source)
+    if board_library:
+        configure_board_library(configuration)
     return configuration
 
 
-def configure_board_library(configuration, source):
-    """Patch an existing private Compose; preserve accounts, keys and database paths."""
-    if not isinstance(source, str) or not source.startswith("/") or ".." in source.split("/"):
-        raise ValueError("explicit_absolute_board_library_source_required")
+def _mount_target(mount):
+    if isinstance(mount, dict):
+        return mount.get("target")
+    parts = mount.split(":")
+    return parts[1] if len(parts) > 1 else parts[0]
+
+
+def remove_board_library_startup(configuration):
+    """End the one-time import hook without touching published storage or credentials."""
+    api = configuration["services"]["api"]
+    for name in (
+        "APP_DATA_BOARD_LIBRARY_SOURCE",
+        "APP_DATA_BOARD_LIBRARY_STORE",
+        "APP_DATA_BOARD_LIBRARY_IMPORT_ID",
+        "APP_DATA_BOARD_LIBRARY_SQL_MAX_BYTES",
+    ):
+        api["environment"].pop(name, None)
+
+    if "volumes" in api:
+        api["volumes"] = [
+            mount for mount in api["volumes"] if _mount_target(mount) != "/import/board-library"
+        ]
+    if api.get("healthcheck", {}).get("start_period") == "10m":
+        api["healthcheck"].pop("start_period")
+    api["command"] = api_start_command()
+
+
+def configure_board_library(configuration):
+    """Read an already published library; never mount or scan the old source."""
     api = configuration["services"]["api"]
     env = api["environment"]
     settings = json.loads(env.get("APP_DATA_APPLICATIONS", "{}"))
-    settings.setdefault("board_game_agent", {}).setdefault("public_file_roots", {})[
-        "library_store"
-    ] = "/data/board-library"
+    roots = settings.setdefault("board_game_agent", {}).setdefault("public_file_roots", {})
+    store = roots.setdefault("library_store", "/data/board-library")
     env["APP_DATA_APPLICATIONS"] = json.dumps(settings, ensure_ascii=False)
-    env["APP_DATA_BOARD_LIBRARY_SOURCE"] = "/import/board-library"
-    env["APP_DATA_BOARD_LIBRARY_STORE"] = "/data/board-library"
-    env.setdefault("APP_DATA_BOARD_LIBRARY_IMPORT_ID", "initial")
-    env.setdefault("APP_DATA_BOARD_LIBRARY_SQL_MAX_BYTES", "4194304")
-    api["command"] = api_start_command()
-    mounts = [
-        v
-        for v in api.get("volumes", [])
-        if not isinstance(v, dict)
-        or v.get("target") not in {"/import/board-library", "/data/board-library"}
-    ]
-    mounts.extend(
-        [
-            {
-                "type": "bind",
-                "source": source,
-                "target": "/import/board-library",
-                "read_only": True,
-                "bind": {"create_host_path": False},
-            },
-            {"type": "volume", "source": "board_library_data", "target": "/data/board-library"},
-        ]
-    )
-    api["volumes"] = mounts
-    api.setdefault("healthcheck", {})["start_period"] = "10m"
-    configuration.setdefault("volumes", {}).setdefault("board_library_data", {})
+    remove_board_library_startup(configuration)
+    mounts = api.setdefault("volumes", [])
+    if not any(_mount_target(v) == store for v in mounts):
+        mounts.append({"type": "volume", "source": "board_library_data", "target": store})
+        configuration.setdefault("volumes", {}).setdefault("board_library_data", {})
 
 
 def main():
@@ -264,7 +264,9 @@ def main():
     parser.add_argument("--api-image", default="app-data-service:0.5.0-test")
     parser.add_argument("--port", type=int, default=18280)
     parser.add_argument("--allowed-origins", default="")
-    parser.add_argument("--board-library-source", help="NAS absolute source for automatic import")
+    parser.add_argument(
+        "--board-library", action="store_true", help="Mount published library storage"
+    )
     parser.add_argument("--dsm-identity-origin")
     parser.add_argument("--dsm-lan-ip")
     parser.add_argument("--applications", type=Path, help="Application settings JSON file")
@@ -290,7 +292,7 @@ def main():
         public_mounts=json.loads(args.public_mounts.read_text(encoding="utf-8"))
         if args.public_mounts
         else {},
-        board_library_source=args.board_library_source,
+        board_library=args.board_library,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as file:

@@ -23,13 +23,26 @@
 
 不再接受 Web 工程、网页压缩包或网页来源凭据等参数，不需要编译 Flutter。默认打包不需要 Dart；只有显式完整验收时，Dart 才运行同步测试客户端，不参与 API 镜像打包。
 
+完整打包默认复用身份与摘要一致的 PostgreSQL/PowerSync 归档：检查旧清单的平台、镜像 ID、既有导入记录、文件名、大小与 SHA-256，并在晋升前复查。完整安装集仍含三张镜像；`reusedArchives` 与 `rebuiltArchives` 说明本次实际处理范围。依赖缺失或校验不符时重新导出；需要强制重新导出所有组件时使用 `--force-reexport`，不能与 `--api-only` 同用。
+
+WSL 的归档阶段由 Windows 调度 `tools/docker_archive_worker.py`，在 Ubuntu `/tmp` 完成 save、gzip、校验、load 与摘要计算，再将最终 gzip 归档复制到 Windows 暂存区并复核摘要。中间原始 TAR 不经过 Windows 文件系统；临时目录只清理本次自建目录。gzip 等级保持原值，pytest 环境不变。`metadata/release.json` 的 `archiveActions` 包含每组件工作区、缓存原因和压缩/验证/复制的独立耗时。
+
 ### 固定入口与失败定位
+
+构建器先检查 Docker/Buildx、实际 Docker HTTPS 代理到 Registry 鉴权接口，再下载 wheel。
+WSL 握手不代表 Docker 就绪：构建器先等待实际 Docker API，已安装的 Docker/已登记的
+本机代理服务若停止则尝试非交互启动；启动失败报告权限或服务故障，不安装新服务、
+重启整台 WSL 或修改 NAS。数据库就绪与 Windows 转发恢复仅属于开发检查入口，
+不因镜像构建启动开发数据库或执行 pytest。
+每阶段的完整输出与耗时写入 `.local/task-logs/<本次任务>/` 的日志和 `stages.json`，
+失败、超时仍保留。报告不记录命令参数、代理凭据或鉴权响应；含秘密的 Compose 输出
+仍只进入原私有校验文件。开发检查另用 `tools/run_checks.py`，不与构建串联完整 pytest。
 
 - 打包入口固定为 `tools/build_docker_bundle.py`，容器验收入口固定为 `tools/verify_stack.py`。不要每次手写另一套 build/save/load 命令或临时跳过验收。
 - 流程依次为：输入检查 → wheel 准备 → 镜像构建/load → 临时归档/save、校验及重新导入 → 隔离容器验收 → 更新 `release/`。不同阶段可以有不同错误，报告必须指出失败阶段和日志路径。
 - “镜像已构建并载入 Docker”不等于交付成功。验收前已经可能在 `.local/bundle-*/delivery/` 生成临时 TAR；只有全部通过才晋升至 `release/`，失败保持原交付包和配套文件不变。
 - Windows 使用 WSL Docker 时，三个固定入口（打包、容器验收、同步探针）都用 `tools/docker_runtime.py` 保持附着的 WSL 进程，覆盖 Windows 侧的压缩、Dart 客户端及等待阶段。任务结束或失败后关闭自己持有的管道并回收进程，不修改 `.wslconfig`，不关闭整台 WSL，也不依赖人工一直开着终端。
-- WSL 冷启动就绪握手最多 45 秒，辅助进程最多一小时，清理等待有界。它不能阻止用户显式关机或外部强制终止 Docker；这类故障仍须报告，不能标成业务测试通过。此启动预算与业务收敛超时分别管理。
+- WSL 冷启动就绪握手最多 180 秒，辅助进程最多 24 小时，清理等待有界。它不能阻止用户显式关机或外部强制终止 Docker；这类故障仍须报告，不能标成业务测试通过。此启动预算与业务收敛超时分别管理。
 - 容器验收失败会打印 `.local/stack-<随机ID>/failure.json` 的完整路径，记录阶段、容器状态、退出码、OOM 标记和重启次数；同目录保留 `dart.log` 和 `docker.log`。状态快照不包含容器环境变量、密码或私钥。诊断记录在测试清理前采集。
 
 2026-10-27 排查：两次本机验收分别停在 `payroll_records deleted in personal ledger` 与 `business_preferences winner`。WSL journal 显示 Docker 引擎先于客户端超时被 systemd 停止（10 月 26 日 23:34:55、23:48:41，Asia/Shanghai），客户端随后持续收到 502。该证据定位到本机验收环境提前关机，不能据此认定某张业务表的删除失败，也不能用来解释真实 NAS 上的 API 容器意外重启。[Microsoft 文档](https://learn.microsoft.com/en-us/windows/wsl/systemd) 明确说明 systemd 服务本身不会维持 WSL 实例运行；固定入口须管理任务期间的运行时生命周期。
@@ -38,7 +51,7 @@
 
 1. 在受控维护窗口审查迁移和备份；本次本地构建不会访问或备份真实 NAS。
 2. 导入新的 FastAPI 镜像包，用配套 Compose 更新原项目。PostgreSQL、PowerSync 的版本、凭据和数据卷保持不变，不删除卷重试。
-3. API 启动先迁移至本版本的 `head`（阶段 2、3 为 `0012`），再执行 `app-data register-applications`，移除迁移凭据后以运行角色启动。旧会话可能需要重新登录，不清空客户端缓存或离线队列。
+3. API 启动先迁移至本版本的 `head`，再执行 `app-data register-applications`，移除迁移凭据后以运行角色启动。旧资料一次性导入已退出启动流程，打包器清理旧导入参数和源目录挂载，保留已发布资料卷及应用存储配置。旧会话可能需要重新登录，不清空客户端缓存或离线队列。
 4. 应用配置统一使用 `APP_DATA_APPLICATIONS`。各 Web 应用使用不同 origin；沿用原配置中仍适用的网页来源与文件根，不能把多个应用浏览器来源混成一个。
 5. 同步配置由已安装模块生成，包含应用签名与数据集成员校验，不能沿用缺少应用隔离的旧规则。
 

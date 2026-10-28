@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +62,32 @@ PUBLIC_TYPES = {".pdf", ".md", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".svg",
 MAX_FILE = 512 * 1024 * 1024
 DEFAULT_SQL_FILE_MAX = 4 * 1024 * 1024
 TABLES = {t.name: t for t in m.DRAFT_TABLES}
+# NAS service metadata is not library content. Prune these directories before
+# scanning their contents; WebDAV clients may hide them while bind mounts do not.
+SOURCE_METADATA_NAMES = {"._DAV", ".DAV", "@eaDir"}
+
+
+class SourcePathError(ValueError):
+    def __init__(self, code, relative):
+        super().__init__(code)
+        self.relative = relative
+
+
+def _input_error(error, **scope):
+    code = str(error) if isinstance(error, ValueError) else type(error).__name__
+    result = {**scope, "code": code}
+    relative = error.relative if isinstance(error, SourcePathError) else None
+    # Report source-relative filenames, never a supplied URL/query or control data.
+    if (
+        isinstance(relative, str)
+        and len(relative) <= 1024
+        and "://" not in relative
+        and not re.search(r"[\x00-\x1f\x7f?#]", relative)
+        and not relative.startswith(("/", "\\"))
+        and not re.match(r"^[A-Za-z]:", relative)
+    ):
+        result["path"] = relative
+    return result
 
 
 def digest_file(path):
@@ -85,20 +112,51 @@ def digest_file(path):
 
 
 def safe_path(root, relative):
-    if not isinstance(relative, str) or len(relative) > 1024 or "\\" in relative:
-        raise ValueError("invalid_relative_path")
+    if (
+        not isinstance(relative, str)
+        or len(relative) > 1024
+        or "\\" in relative
+        or "\x00" in relative
+    ):
+        raise SourcePathError("invalid_relative_path", relative)
     parts = relative.split("/")
-    if not parts or any(not p or p in {".", ".."} or p.startswith(".") or ":" in p for p in parts):
-        raise ValueError("invalid_relative_path")
+    if not parts or any(
+        not p or p.startswith(".") or p in SOURCE_METADATA_NAMES or ":" in p for p in parts
+    ):
+        raise SourcePathError("invalid_relative_path", relative)
     path = root.joinpath(*parts)
     if not path.resolve().is_relative_to(root):
-        raise ValueError("path_outside_source")
+        raise SourcePathError("path_outside_source", relative)
     for candidate in (path, *path.parents):
         if candidate.is_relative_to(root) and (
             candidate.is_symlink() or getattr(candidate, "is_junction", lambda: False)()
         ):
-            raise ValueError("linked_source_path")
+            raise SourcePathError("linked_source_path", relative)
     return path
+
+
+def _inventory_files(plan, directory, slug):
+    def walk_error(error):
+        # os.walk otherwise ignores unreadable directories, losing real content.
+        raise error
+
+    def keep(path):
+        relative = path.relative_to(plan.source).as_posix()
+        if path.name in SOURCE_METADATA_NAMES:
+            plan.warnings.append(
+                {"game": slug, "code": "source_metadata_skipped", "path": relative}
+            )
+            return False
+        safe_path(plan.source, relative)
+        return True
+
+    for parent, directories, files in os.walk(directory, onerror=walk_error, followlinks=False):
+        parent = Path(parent)
+        directories[:] = sorted(name for name in directories if keep(parent / name))
+        for name in sorted(files):
+            path = parent / name
+            if keep(path) and path.is_file():
+                yield path
 
 
 def strings(value):
@@ -284,8 +342,7 @@ def plan_library(source, selected=None, *, sql_file_max=DEFAULT_SQL_FILE_MAX):
             try:
                 _game(plan, entry)
             except (ValueError, KeyError, TypeError, OSError) as error:
-                code = str(error) if isinstance(error, ValueError) else type(error).__name__
-                plan.errors.append({"game": slug, "code": code})
+                plan.errors.append(_input_error(error, game=slug))
         if wanted - seen:
             plan.errors.append({"code": "unknown_selected_games", "games": sorted(wanted - seen)})
         # Keep small library-wide documents such as ASSET_SPEC.md too. No access
@@ -314,8 +371,7 @@ def plan_library(source, selected=None, *, sql_file_max=DEFAULT_SQL_FILE_MAX):
         if not plan.rows[m.editions.name]:
             plan.errors.append({"code": "empty_library_plan"})
     except (ValueError, KeyError, TypeError, OSError) as error:
-        code = str(error) if isinstance(error, ValueError) else type(error).__name__
-        plan.errors.append({"code": code})
+        plan.errors.append(_input_error(error))
     return plan
 
 
@@ -421,11 +477,7 @@ def _game(plan, entry):
     # Explicit one-time source inventory. Unregistered files are archived, not lost
     # or promoted into public/AI content by their filename.
     directory = safe_path(plan.source, prefix.rstrip("/"))
-    for path in sorted(directory.rglob("*")):
-        if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
-            raise ValueError("linked_source_path")
-        if not path.is_file():
-            continue
+    for path in sorted(_inventory_files(plan, directory, slug)):
         relative = path.relative_to(directory).as_posix()
         if relative in {"game.json", "manifest.json"} or prefix + relative in plan._paths:
             continue

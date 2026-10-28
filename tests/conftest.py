@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 
 from app_data_service.cli import local_config, migrate
 from app_data_service.config import make_engine
@@ -19,9 +20,23 @@ def db():
     assert database_name.startswith("app_data_test_") and len(database_name) == 46
     admin = make_engine(urls["admin"])
     engines = []
+    created = False
     try:
+        # Abort the session once: a missing shared prerequisite must not turn
+        # into hundreds of fixture errors or a second failed cleanup connection.
+        try:
+            with admin.connect() as connection:
+                connection.exec_driver_sql("SELECT 1")
+        except SQLAlchemyError:
+            pytest.exit(
+                "Local PostgreSQL preflight failed (connection/authentication). "
+                "Use python tools/run_checks.py; check WSL and the configured database port. "
+                "No test database was created.",
+                returncode=2,
+            )
         with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
             connection.exec_driver_sql(f'CREATE DATABASE "{database_name}" OWNER app_migrator')
+            created = True
             connection.exec_driver_sql(f'REVOKE ALL ON DATABASE "{database_name}" FROM PUBLIC')
             connection.exec_driver_sql(
                 f'GRANT CONNECT ON DATABASE "{database_name}" TO app_runtime, app_replication'
@@ -62,6 +77,11 @@ def db():
         for engine in engines:
             engine.dispose()
         # The exact database name is generated above, never taken from user input.
-        with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
-            connection.exec_driver_sql(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-        admin.dispose()
+        try:
+            if created:
+                with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+                    connection.exec_driver_sql(
+                        f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)'
+                    )
+        finally:
+            admin.dispose()

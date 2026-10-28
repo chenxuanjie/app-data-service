@@ -1,6 +1,7 @@
 """Catalog acceptance uses isolated real PostgreSQL plus owned temporary source/store files."""
 
 import json
+from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -14,6 +15,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app_data_service.api import create_app
 from app_data_service.auth import TokenAuthority
+from app_data_service.modules.board_game_agent import catalog_import
 from app_data_service.modules.board_game_agent import catalog_models as m
 from app_data_service.modules.board_game_agent.catalog_import import plan_library
 from app_data_service.modules.board_game_agent.catalog_routes import _snapshot
@@ -179,6 +181,113 @@ def test_plan_preserves_history_and_extra_fields(tmp_path):
         == "retain"
     )
     assert list(store.iterdir()) == []
+
+
+def test_nas_metadata_is_pruned_without_reading_or_changing_the_import(tmp_path, monkeypatch):
+    source, store = inputs(tmp_path)
+    baseline = plan_library(source)
+    game = source / "assets/games/first"
+    metadata = [
+        game / "._DAV",
+        game / "docs/._DAV",
+        game / ".DAV",
+        game / "docs/.DAV",
+        game / "images/@eaDir",
+    ]
+    for directory in metadata:
+        directory.mkdir(parents=True)
+        (directory / "game.json.dir").write_bytes(b"")
+        (directory / "game.json.pag").write_bytes(b"not a game resource")
+
+    scandir = catalog_import.os.scandir
+
+    def guarded_scandir(path):
+        assert Path(path) not in metadata, "metadata directory was opened"
+        return scandir(path)
+
+    monkeypatch.setattr(catalog_import.os, "scandir", guarded_scandir)
+    plan = plan_library(source)
+    assert not plan.errors
+    assert plan.source_hash == baseline.source_hash
+    assert plan.rows == baseline.rows and plan.files == baseline.files
+    assert {w["path"] for w in plan.warnings if w["code"] == "source_metadata_skipped"} == {
+        p.relative_to(source).as_posix() for p in metadata
+    }
+    assert (game / "docs/unregistered.txt").relative_to(source).as_posix() in plan._paths
+    assert list(store.iterdir()) == []
+    assert all((directory / "game.json.pag").is_file() for directory in metadata)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "._DAV/game.json.pag",
+        ".DAV/game.json.pag",
+        "images/@eaDir/cover.png/thumb.jpg",
+        "docs/.private/rules.md",
+        "../outside.txt",
+        "docs\\rules.md",
+        "docs/report:copy.txt",
+    ],
+)
+def test_declared_unsafe_paths_still_block_with_the_exact_filename(tmp_path, relative):
+    source, _ = inputs(tmp_path)
+    manifest_path = source / "assets/games/first/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["resources"][0]["path"] = relative
+    write_json(manifest_path, manifest)
+    assert plan_library(source).errors == [
+        {
+            "game": "first",
+            "code": "invalid_relative_path",
+            "path": "assets/games/first/" + relative,
+        }
+    ]
+
+
+def test_unregistered_hidden_content_is_reported_instead_of_silently_dropped(tmp_path):
+    source, _ = inputs(tmp_path)
+    hidden = source / "assets/games/first/docs/.notes.md"
+    hidden.write_text("actual content, not a known service metadata name")
+    assert plan_library(source).errors == [
+        {
+            "game": "first",
+            "code": "invalid_relative_path",
+            "path": hidden.relative_to(source).as_posix(),
+        }
+    ]
+
+
+def test_unreadable_content_directory_blocks_instead_of_importing_an_incomplete_game(
+    tmp_path, monkeypatch
+):
+    source, _ = inputs(tmp_path)
+    unreadable = source / "assets/games/first/docs"
+    scandir = catalog_import.os.scandir
+
+    def denied_scandir(path):
+        if Path(path) == unreadable:
+            raise PermissionError(13, "denied", str(path))
+        return scandir(path)
+
+    monkeypatch.setattr(catalog_import.os, "scandir", denied_scandir)
+    assert plan_library(source).errors == [{"game": "first", "code": "PermissionError"}]
+
+
+def test_invalid_path_diagnostics_do_not_echo_urls_or_control_data(tmp_path):
+    source, _ = inputs(tmp_path)
+    manifest_path = source / "assets/games/first/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    for relative in ("https://user:private@example.invalid/rules.pdf?token=private", "docs/\x00"):
+        manifest["resources"][0]["path"] = relative
+        write_json(manifest_path, manifest)
+        errors = plan_library(source).errors
+        assert errors == [
+            {
+                "game": "first",
+                "code": "expected_text" if "\x00" in relative else "invalid_relative_path",
+            }
+        ]
 
 
 @pytest.mark.parametrize("invalid_value", [[], "", 0, False])

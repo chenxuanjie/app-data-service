@@ -42,14 +42,14 @@ def test_development_stream_config_matches_installed_modules():
     )
 
 
-def test_automatic_library_import_keeps_three_services_and_preserves_secrets(monkeypatch):
+def test_published_library_keeps_three_services_without_startup_import(monkeypatch):
     from copy import deepcopy
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
     renderer = importlib.import_module("render_stack")
     config = renderer.stack("/volume1/test/data", "https://api.test", "https://dsm.test:5001")
     original = deepcopy(config)
-    renderer.configure_board_library(config, "/volume2/friend/apps/board_game_agent/board-game-lib")
+    renderer.configure_board_library(config)
     assert set(config["services"]) == {"api", "postgres", "powersync"}
     assert config["services"]["postgres"] == original["services"]["postgres"]
     assert config["services"]["powersync"] == original["services"]["powersync"]
@@ -57,24 +57,69 @@ def test_automatic_library_import_keeps_three_services_and_preserves_secrets(mon
     for key, value in original["services"]["api"]["environment"].items():
         if key != "APP_DATA_APPLICATIONS":
             assert api["environment"][key] == value
-    assert api["volumes"][0]["read_only"] is True
-    assert api["volumes"][0]["bind"]["create_host_path"] is False
-    assert api["volumes"][1]["type"] == "volume"
-    assert api["volumes"][1]["source"] == "board_library_data"
+    assert api["volumes"] == [
+        {"type": "volume", "source": "board_library_data", "target": "/data/board-library"}
+    ]
     assert config["volumes"]["board_library_data"] == {}
-    assert api["healthcheck"]["start_period"] == "10m"
+    assert "start_period" not in api["healthcheck"]
     startup = api["command"][2]
-    assert startup.index("register-applications") < startup.index("board-auto-import-library")
-    assert startup.index("board-auto-import-library") < startup.index(
-        "unset APP_DATA_MIGRATION_URL"
-    )
+    assert "board-auto-import-library" not in startup
+    assert "APP_DATA_BOARD_LIBRARY_SOURCE" not in api["environment"]
+    assert startup.index("register-applications") < startup.index("unset APP_DATA_MIGRATION_URL")
     assert "cpus" not in api and "user" not in api
     first = deepcopy(config)
-    renderer.configure_board_library(config, "/volume2/friend/apps/board_game_agent/board-game-lib")
+    renderer.configure_board_library(config)
     assert config == first
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
     assert "chown 10001:10001 /data/board-library" in dockerfile
     assert "USER 10001:10001" in dockerfile
+
+
+@pytest.mark.parametrize("short_mount", [False, True])
+def test_completed_import_cleanup_preserves_existing_store_and_other_app_settings(
+    monkeypatch, short_mount
+):
+    from copy import deepcopy
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
+    renderer = importlib.import_module("render_stack")
+    config = renderer.stack("/volume1/test/data", "https://api.test", "https://dsm.test:5001")
+    api = config["services"]["api"]
+    roots = {"board_game_agent": {"public_file_roots": {"library_store": "/existing/store"}}}
+    api["environment"].update(
+        {
+            "APP_DATA_APPLICATIONS": json.dumps(roots),
+            "APP_DATA_BOARD_LIBRARY_SOURCE": "/import/board-library",
+            "APP_DATA_BOARD_LIBRARY_STORE": "/existing/store",
+            "APP_DATA_BOARD_LIBRARY_IMPORT_ID": "initial",
+            "APP_DATA_BOARD_LIBRARY_SQL_MAX_BYTES": "4194304",
+        }
+    )
+    api["volumes"] = [
+        "/nas/source:/import/board-library:ro"
+        if short_mount
+        else {"type": "bind", "source": "/nas/source", "target": "/import/board-library"},
+        "actual_existing_volume:/existing/store",
+        {"type": "bind", "source": "/other/app", "target": "/other", "read_only": True},
+    ]
+    api["healthcheck"]["start_period"] = "10m"
+    api["group_add"] = ["100"]
+    before = deepcopy(config)
+    renderer.configure_board_library(config)
+    assert api["volumes"] == before["services"]["api"]["volumes"][1:]
+    assert api["group_add"] == ["100"]
+    assert api["environment"] == {
+        k: v
+        for k, v in before["services"]["api"]["environment"].items()
+        if not k.startswith("APP_DATA_BOARD_LIBRARY_")
+    }
+    assert "start_period" not in api["healthcheck"]
+    assert config["services"]["postgres"] == before["services"]["postgres"]
+    assert config["services"]["powersync"] == before["services"]["powersync"]
+    assert config.get("volumes") == before.get("volumes")
+    after = deepcopy(config)
+    renderer.remove_board_library_startup(config)
+    assert config == after
 
 
 def test_full_synology_stack_has_private_database_and_stable_identity(monkeypatch):
