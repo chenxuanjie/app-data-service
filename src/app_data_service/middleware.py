@@ -1,6 +1,7 @@
 """Bounded HTTP body reads before JSON parsing."""
 
 import asyncio
+import re
 
 from fastapi.responses import JSONResponse
 
@@ -13,6 +14,12 @@ class BoundedBody:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        # Installer uploads authenticate before consuming their bounded streaming
+        # body. JSON routes retain their small body limit and ten-second budget.
+        if scope["method"] == "PUT" and re.fullmatch(
+            r"/v1/apps/[a-z][a-z0-9_]{1,63}/releases/objects/[a-f0-9]{64}", scope["path"]
+        ):
             return await self.app(scope, receive, send)
         body = bytearray()
         try:

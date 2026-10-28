@@ -12,6 +12,7 @@ from .auth import SYNC_AUDIENCE
 from .auth_routes import build_router as authentication_router
 from .dependencies import Actor, Application, Credential
 from .models import Dataset, User
+from .public_releases import install as install_public_releases
 from .store import user_transaction
 
 PREFIX = "/v1/apps/{application_id}"
@@ -19,6 +20,7 @@ PREFIX = "/v1/apps/{application_id}"
 
 def build_router(runtime, *, router=None, prefix=PREFIX):
     router = APIRouter() if router is None else router
+    install_public_releases(router, runtime, prefix)
     if runtime.sessions:
         authentication_router(runtime, router=router, prefix=prefix)
 

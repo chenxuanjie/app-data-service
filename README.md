@@ -2,6 +2,8 @@
 
 # Flutter 应用数据服务
 
+游客 APK/EXE 升级与独立机器发布权限见 [公开安装包发布](docs/public-releases.md)。该功能需要迁移 0015 和新 API 镜像；WebDAV 备用发布保留，未自动构建或部署。
+
 当前功能分支 `feature/multi-app-foundation` 已实现多应用模块化基础，尚未构建新镜像或部署。
 公共账号、会话、权限和数据空间与各应用业务分离；Zheri 客户端不在本轮修改范围，桌游客户端已在独立分支接入账号和阶段 2、3 业务。
 源码包元数据仍为 0.5.0，尚未形成新发布版本。新增迁移 0010/0011 和应用配置需与 API 镜像、同步规则配套上线。
@@ -54,9 +56,7 @@ python -m venv .venv
 docker compose --env-file .local/dev.env -f deploy/compose.dev.yaml up -d --wait
 .venv\Scripts\app-data --local migrate
 .venv\Scripts\app-data --local check
-.venv\Scripts\python -m pytest -q
-.venv\Scripts\python -m ruff check .
-.venv\Scripts\python -m ruff format --check .
+.venv\Scripts\python tools/run_checks.py
 ```
 
 若 Docker 位于 Ubuntu WSL，可将 Docker 命令改为：
@@ -65,8 +65,20 @@ docker compose --env-file .local/dev.env -f deploy/compose.dev.yaml up -d --wait
 wsl -d Ubuntu --exec docker compose --env-file /mnt/c/Study/MyCode/MyProject/apps/app_data_service/.local/dev.env -f /mnt/c/Study/MyCode/MyProject/apps/app_data_service/deploy/compose.dev.yaml up -d --wait
 ```
 
-Docker 必须先运行。部分 WSL 配置在无前台 Linux 命令时会停止发行版；运行 Windows
-数据库工具期间可在另一个终端保持 WSL 活动，不需要修改系统代理或 WSL 设置。
+Docker 必须先运行。`run_checks.py` 固定使用 Windows 项目 `.venv` 运行，并持有 Ubuntu WSL 保活租约，依次检查
+Docker、数据库 TCP/认证、ruff 和完整 pytest；本机 Docker 固定使用 Ubuntu WSL，不临时改用 WSL Python 跑 pytest。
+数据库不可达立即停止，不自动修改连接地址或切换数据库。每阶段输出与耗时保存在
+`.local/task-logs/`，失败时保留日志，pytest 默认首错停止；完整测试预算 2 小时，ruff 每阶段 10 分钟；不因几分钟无输出取消仍在运行的任务。
+入口分开检查 WSL 命令通道、Docker API、开发 PostgreSQL 健康、WSL 内部端口、Windows
+连接及数据库认证。Docker 停止时仅启动本机已安装服务；开发数据库停止时校验 Compose
+身份后仅启动现有容器，不新建数据库卷。冷启动等待健康检查，而不是看到 WSL 握手就
+立即连接。若 WSL 内部 55432 可达而 Windows 原生转发不可用，且 Windows 端口空闲，
+本次任务会建立 `127.0.0.1:55432` 到同一 WSL 数据库的 stdio 转发，任务结束清理；
+不修改数据库 URL、持久配置、防火墙或 WSL 网络模式。端口被占用、服务启动权限不足、
+容器身份不符或 WSL 本身无响应时，明确报告故障层，不杀未知进程、不重启整台 WSL。
+
+直接执行 `pytest` 也会在数据库前置条件失败时结束会话；需要收集所有业务失败时可显式
+使用 `--maxfail=0`。运行其他 Windows 数据库工具时仍需保持 WSL 活动。
 若当前网络的 Docker 拉取受限，先通过已有可信镜像导入方式取得同版本官方镜像。
 
 `pytest` 会在这个本地实例创建随机命名的临时测试数据库，完成后仅删除该测试库，
