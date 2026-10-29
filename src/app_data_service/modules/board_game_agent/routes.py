@@ -17,7 +17,6 @@ from app_data_service.store import user_transaction
 
 from . import business
 from .catalog_routes import install as install_catalog
-from .library import PublishedLibrary
 from .loomex import install as install_loomex
 
 PREFIX = "/v1/apps/board_game_agent"
@@ -27,8 +26,6 @@ def build_router(runtime):
     router = application_router("board_game_agent")
     install_loomex(router)
     install_catalog(router, runtime)
-    settings = runtime.application_settings.get("board_game_agent", {})
-    library = PublishedLibrary(settings.get("public_file_roots", {}).get("library"))
 
     @router.post(PREFIX + "/community/sync-credentials")
     def public_sync_credentials():
@@ -49,14 +46,6 @@ def build_router(runtime):
             },
             headers={"Cache-Control": "no-store"},
         )
-
-    @router.get(PREFIX + "/library")
-    def publication():
-        return library.index()
-
-    @router.api_route(PREFIX + "/library/files/{path:path}", methods=["GET", "HEAD"])
-    def published_file(path: str, request: Request):
-        return library.file(path, request)
 
     @router.post(PREFIX + "/sync/upload")
     def sync_upload(body: business.Upload, actor: Actor):

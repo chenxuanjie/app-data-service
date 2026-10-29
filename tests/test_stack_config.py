@@ -13,7 +13,7 @@ def test_public_application_mounts_are_explicit_readonly_and_never_create_host_d
 ):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
     renderer = importlib.import_module("render_stack")
-    settings = {"board_game_agent": {"public_file_roots": {"library": "/data/public/board"}}}
+    settings = {"board_game_agent": {"public_file_roots": {"library_store": "/data/public/board"}}}
     args = ("/volume1/test-postgres", "https://api.test", "https://dsm.test:5001")
     with pytest.raises(ValueError, match="explicit absolute host mount"):
         renderer.stack(*args, application_settings=settings)

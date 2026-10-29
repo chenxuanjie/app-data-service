@@ -1,14 +1,10 @@
-import hashlib
-import json
 from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
-from fastapi.testclient import TestClient
 from sqlalchemy.exc import DBAPIError
 from test_sessions import authenticated as authenticated_fixture
 
-from app_data_service.api import create_app
 from app_data_service.modules.board_game_agent.models import favorites
 from app_data_service.store import user_transaction
 
@@ -208,52 +204,10 @@ def test_community_actor_ownership_replay_and_ratings(authenticated):
     )
 
 
-def test_publication_is_anonymous_allowlisted_and_integrity_checked(db, tmp_path):
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-
-    from app_data_service.auth import TokenAuthority
-
-    source, output = tmp_path / "source", tmp_path / "published"
-    (source / "assets").mkdir(parents=True)
-    (source / "assets/catalog.json").write_text('{"games": []}', encoding="utf-8")
-    (source / "assets/rules.pdf").write_bytes(b"%PDF-fixture")
-    # Existing client protocol stays readable until its separate catalog cutover.
-    # Its historical fixture is not a second production publishing implementation.
-    import shutil
-
-    shutil.copytree(source, output)
-    files = {
-        p.relative_to(source).as_posix(): {
-            "size": p.stat().st_size,
-            "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
-        }
-        for p in (source / "assets").iterdir()
-    }
-    (output / "publication.json").write_text(json.dumps({"version": 1, "files": files}))
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
-    )
-    app = create_app(
-        db.runtime,
-        TokenAuthority(key, "http://testserver"),
-        "http://testserver/powersync",
-        application_settings={"board_game_agent": {"public_file_roots": {"library": str(output)}}},
-    )
-    with TestClient(app) as client:
-        assert client.get(BASE + "/library").status_code == 200
-        uri = BASE + "/library/files/assets/rules.pdf"
-        response = client.get(uri)
-        assert response.status_code == 200 and response.content == b"%PDF-fixture"
-        assert client.head(uri).content == b""
-        assert client.get(uri, headers={"Range": "bytes=0-3"}).content == b"%PDF"
-        assert (
-            client.get(uri, headers={"If-None-Match": response.headers["etag"]}).status_code == 304
-        )
-        assert client.get(BASE + "/library/files/publication.json").status_code == 404
-        (output / "assets/rules.pdf").write_bytes(b"%PDF-changed")
-        assert client.get(uri).status_code == 503
-    assert json.loads((output / "publication.json").read_text())["version"] == 1
+def test_retired_file_snapshot_endpoints_are_not_exposed(authenticated):
+    client, _, _, _ = authenticated
+    assert client.get(BASE + "/library").status_code == 404
+    assert client.get(BASE + "/library/files/assets/rules.pdf").status_code == 404
 
 
 def test_field_preferences_merge_without_resetting_another_devices_field(authenticated, db):

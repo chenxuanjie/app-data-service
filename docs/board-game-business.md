@@ -14,8 +14,8 @@
 
 | 接口 | 身份与用途 |
 | --- | --- |
-| GET `/library` | 匿名，经过验证的公开发布清单 |
-| GET/HEAD `/library/files/{path}` | 匿名，清单内文件，SHA-256/大小验证、ETag 和 Range |
+| GET `/catalog`、`/catalog/changes` | 匿名读取 SQL 发布的资料目录及增量 |
+| GET/HEAD `/catalog/resources/{id}/content` | 匿名读取已发布的图片或文档，支持摘要及 Range |
 | POST `/sync/upload` | 登录，`dataset_id` 与类型化 mutations；记录 ID、字段和应用须匹配 |
 | GET `/community/comments/{game}` | 匿名可读，登录时附本人点赞状态；时间＋ID 游标分页 |
 | POST `/community/commands` | 登录，发布/删除/点赞的幂等命令；只可删除自己的评论 |
@@ -30,33 +30,19 @@
 
 新资料改用 [SQL 资料库与统一发布服务](library-catalog.md)：只读预览 → 类型化 SQL 草稿与内容寻址文件存储 → 原子发布。使用 `board-plan-library`、`board-import-library`、`board-publish-library --batch` 三条维护命令；旧的 `--source --destination` 快照生成实现已移除。
 
-日常 NAS 部署已通过 Compose 启动命令自动编排上述步骤，不要求用户执行三条维护命令；api 日志列出每个桌游、小文件入 SQL 与发布完成状态。默认 4 MiB 内原件还保存为 SQL 原文/文本/JSON，缺失和未知附加字段保留并警告。原资料只读挂载，新资料使用自动创建的专用命名卷，维持三个常驻服务；具体配置和重启行为见上述协议。
+默认 4 MiB 内原件还保存为 SQL 原文/文本/JSON，缺失和未知附加字段保留并警告。已完成的一次性导入不在正常 API 启动时重新执行；维护导入和发布命令保留，具体配置和重启行为见上述协议。
 
-新 `/catalog` 直接查询 SQL。当前客户端尚未切换，表中旧 `/library` 及已有只读快照继续提供现有读取；它们不是新发布的回退或双写路径。阶段切换时移除旧读取实现。原始资料和历史状态的保留、维护连接要求及新 `library_store` 挂载配置见上述专项说明。
+客户端通过 `/catalog` 查询 SQL 发布资料；旧 `/library` 只读接口和快照配置已移除，不提供回退。原始资料和历史状态的保留、维护连接要求及 `library_store` 挂载配置见上述专项说明。
 
 ## 配置与下一次部署
 
-在已有 `APP_DATA_APPLICATIONS` 中为桌游增加：
+在已有 `APP_DATA_APPLICATIONS` 中为桌游配置已发布资料卷和安装包卷：
 
 ```json
-{"board_game_agent":{"public_file_roots":{"library":"/data/public/board_game_agent"}}}
+{"board_game_agent":{"public_file_roots":{"library_store":"/data/board-library","releases":"/data/app-releases"}}}
 ```
 
-在 API 服务增加管理员准备的快照挂载；下面只是字段示例，不是可直接覆盖生产配置的完整 Compose：
-
-```yaml
-volumes:
-  - type: bind
-    source: /volume1/published/board-game-agent
-    target: /data/public/board_game_agent
-    read_only: true
-    bind:
-      create_host_path: false
-```
-
-开发用 `render_stack.py --applications <json> --public-mounts <json>` 支持声明式配置；后一个 JSON 将每个已声明容器目录映射到明确宿主机路径。生成器要求所有目录有匹配挂载，固定只读且不创建宿主目录。不要为了加挂载重新生成已有私有 Compose，从而意外轮换数据库密码/密钥；保留已有数据目录、秘密和 DSM 身份命名空间。
-
-后续正式交付须配套：新 API 镜像、迁移至 0013、应用注册、重新生成的 PowerSync 规则和只读公开目录。PostgreSQL/PowerSync 基础镜像版本未改变。API 仍是纯 API 镜像，不包含 Zheri 网页。所有 SDK 同步 endpoint 规范为以 `/` 结尾，避免 URI.resolve 丢掉 `/powersync/` 挂载路径。
+上述仅为配置形状，不应覆盖完整私有 Compose。保留已发布资料卷、安装包卷、数据库、签名、应用配置及 DSM 身份命名空间；不要重新导入或清空数据。部署须配套新 API 镜像、当前迁移及 PowerSync 规则。API 仍是纯 API 镜像，不包含 Zheri 网页。
 
 Web 浏览器仍需要自己的 `/api/` 转发及 SQLite Worker 静态资源/响应头；用户已暂缓该部署问题，本轮不增加旧网关兼容。Loomex 模型服务、旧部署最终移除和实际设备验收不在阶段 2、3 的完成声明内。
 
