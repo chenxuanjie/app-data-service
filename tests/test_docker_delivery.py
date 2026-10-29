@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import importlib
 import io
@@ -21,9 +22,50 @@ def test_container_validation_uses_current_application_contract(monkeypatch):
     assert "app-data register-applications" in api["command"][2]
     bundler = importlib.import_module("build_docker_bundle")
     bundler.validate_api_configuration(configuration)
+    bundler.validate_release_delivery(configuration)
+    mounts = api["volumes"]
+    assert any(m.get("target") == "/data/app-releases" for m in mounts if isinstance(m, dict))
     del api["environment"]["APP_DATA_APPLICATIONS"]
     with pytest.raises(ValueError, match="APP_DATA_APPLICATIONS"):
         bundler.validate_api_configuration(configuration)
+
+
+def test_ghcr_compose_requires_verified_identity_and_preserves_existing_data(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
+    verifier = importlib.import_module("verify_stack")
+    renderer = importlib.import_module("prepare_ghcr_compose")
+    source = verifier.verification_stack("local-fixture")
+    before = copy.deepcopy(source)
+    image = renderer.IMAGE + "@sha256:" + "a" * 64
+    revision = "b" * 40
+    inspection = {
+        "os": "linux",
+        "architecture": "amd64",
+        "digests": [image],
+        "labels": {
+            "org.opencontainers.image.revision": revision,
+            "org.opencontainers.image.source": "https://github.com/chenxuanjie/app-data-service",
+        },
+    }
+    validation = {
+        "apiImage": image,
+        "non_root_release_volume_permissions": True,
+        "publicRelease": {
+            "sqlPublication": True,
+            "anonymousDownloadSha256": True,
+            "persistedAfterRestart": True,
+        },
+    }
+    result = renderer.render(source, image, revision, inspection, validation)
+    assert result["services"]["api"]["image"] == image
+    assert result["services"]["api"]["pull_policy"] == "always"
+    result["services"]["api"]["image"] = "local-fixture"
+    result["services"]["api"].pop("pull_policy")
+    assert result == before
+    with pytest.raises(ValueError, match="not passed"):
+        renderer.render(copy.deepcopy(before), image, revision, inspection, {})
+    with pytest.raises(ValueError, match="source"):
+        renderer.render(copy.deepcopy(before), image, "c" * 40, inspection, validation)
 
 
 @pytest.mark.parametrize(

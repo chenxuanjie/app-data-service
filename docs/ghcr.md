@@ -40,3 +40,19 @@ PR 只构建，不登录或推送 GHCR。构建不附带完整业务测试。
    数据库迁移需单独考虑兼容性，不能把切回镜像称为回退数据库。
 
 实际私有 Compose 保留在本机忽略目录，不提交 GitHub。本次云端发布不代表 NAS 已更新。
+
+## 固定镜像的本地验收与 Compose 交付
+
+云端构建成功后，拉取 Actions 输出的具体 digest，再用既有容器验证器验收该镜像。
+`--smoke-only` 包含启动、非 root 安装包卷权限、上传/SQL 发布、匿名下载摘要、Range
+及 API 重启后的持久化；不会自动执行全量业务同步。`--release-artifact` 可指定已有 APK，
+测试只上传到隔离容器和临时数据库，不向 NAS 或正式发布服务上传。
+
+```powershell
+.venv/Scripts/python.exe tools/verify_stack.py --docker wsl --api-image '<GHCR digest 引用>' --smoke-only --release-artifact '<本机已有 APK>' --report release/ghcr/validation.json
+.venv/Scripts/python.exe tools/prepare_ghcr_compose.py --compose .local/p1-release-build-input.yaml --image '<同一 digest 引用>' --validation release/ghcr/validation.json --output release/ghcr/docker-compose.yml --docker wsl
+```
+
+正式交付用 source gate 包裹这些本地步骤并记录 Compose、验证报告。准备工具核对镜像的
+linux/amd64 架构、源码提交和本地验证记录，仅更换 API 镜像及其拉取策略。实际配置中的
+数据库、密钥、资料和安装包挂载保留；旧离线压缩包不作为 GHCR 更新的必要步骤。

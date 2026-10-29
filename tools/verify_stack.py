@@ -1,16 +1,20 @@
 """Validate the full imported stack against a strict TLS DSM substitute."""
 
 import argparse
+import hashlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 import httpx
 import yaml
+from configure_public_releases import configure as configure_releases
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -43,8 +47,8 @@ def capture_stack_state(docker, compose):
         return {"diagnosticError": type(error).__name__}
 
 
-def verification_stack(api_image):
-    return stack(
+def verification_stack(api_image, release_key="isolated-fixture-release-key-not-production"):
+    config = stack(
         "/volume2/friend/apps/app_data_service_test/postgres",
         "http://127.0.0.1:18380",
         "https://dsm.test:9443",
@@ -57,6 +61,97 @@ def verification_stack(api_image):
             "board_game_agent": {"browser_origin": "http://localhost:18380"},
         },
     )
+    configure_releases(config, "board_game_agent", hashlib.sha256(release_key.encode()).hexdigest())
+    return config
+
+
+def verify_public_release(client, base, key, artifact_path=None):
+    """Exercise public release IO with a fixture or an explicitly selected local APK."""
+    prefix = base + "/v1/apps/board_game_agent/releases"
+    if artifact_path:
+        with artifact_path.open("rb") as content:
+            digest = hashlib.file_digest(content, "sha256").hexdigest()
+        size = artifact_path.stat().st_size
+    else:
+        data = b"PK\x03\x04" + b"isolated-release-fixture" * 4096
+        digest, size = hashlib.sha256(data).hexdigest(), len(data)
+    headers = {"X-Release-Publish-Key": key}
+    assert client.get(prefix + "/manifest?platform=android&architecture=arm64").status_code == 404
+    assert client.put(prefix + "/objects/" + digest, content=b"x").status_code == 403
+    if artifact_path:
+
+        def chunks():
+            with artifact_path.open("rb") as content:
+                while chunk := content.read(256 * 1024):
+                    yield chunk
+
+        response = client.put(
+            prefix + "/objects/" + digest,
+            content=chunks(),
+            headers={**headers, "Content-Length": str(size)},
+        )
+    else:
+        response = client.put(prefix + "/objects/" + digest, content=data, headers=headers)
+    assert response.status_code == 200, "Installer streaming upload failed"
+    assert response.json() == {"sha256": digest, "size": size, "verified": True}
+    assert client.get(prefix + "/artifacts/" + digest + ".apk").status_code == 404
+    payload = {
+        "schemaVersion": 1,
+        "appId": "board_game_agent",
+        "channel": "stable",
+        "versionName": "1.0.0",
+        "buildNumber": 1,
+        "minimumSupportedBuild": 0,
+        "forceUpdate": False,
+        "publishedAt": datetime.now(UTC).isoformat(),
+        "releaseNotes": {},
+        "artifacts": [
+            {
+                "platform": "android",
+                "architecture": "any",
+                "path": "probe.apk",
+                "size": size,
+                "sha256": digest,
+                "mimeType": "application/vnd.android.package-archive",
+            }
+        ],
+    }
+    assert client.post(prefix + "/publish", json=payload).status_code == 403
+    response = client.post(prefix + "/publish", json=payload, headers=headers)
+    assert response.status_code == 200, "SQL release publication failed"
+    published = response.json()
+    for architecture in ("any", "arm64", "arm", "x64", "x86"):
+        result = client.get(
+            prefix + "/manifest",
+            params={
+                "platform": "android",
+                "architecture": architecture,
+            },
+        )
+        assert result.status_code == 200 and result.json() == published
+    artifact = prefix + "/artifacts/" + digest + ".apk"
+    head = client.head(artifact)
+    assert head.status_code == 200 and int(head.headers["content-length"]) == size
+    assert head.headers["etag"] == '"' + digest + '"'
+    checksum, received = hashlib.sha256(), 0
+    with client.stream("GET", artifact) as downloaded:
+        assert downloaded.status_code == 200
+        for chunk in downloaded.iter_bytes():
+            checksum.update(chunk)
+            received += len(chunk)
+    assert received == size and checksum.hexdigest() == digest
+    partial = client.get(artifact, headers={"Range": "bytes=0-31"})
+    assert partial.status_code == 206 and len(partial.content) == 32
+    return {
+        "streamUpload": True,
+        "anonymousWriteDenied": True,
+        "unpublishedObjectPrivate": True,
+        "genericAnySelection": True,
+        "anonymousDownloadSha256": True,
+        "range": True,
+        "size": size,
+        "sha256": digest,
+    }
 
 
 def write_report(report, directory, destination):
@@ -69,12 +164,17 @@ def write_report(report, directory, destination):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--api-image", default="app-data-service:0.5.0-test")
+    parser.add_argument("--api-image", default="app-data-service:0.5.1-test")
     parser.add_argument("--dart", default=shutil.which("dart") or "dart")
     parser.add_argument(
         "--docker", choices=["native", "wsl"], default="wsl" if os.name == "nt" else "native"
     )
     parser.add_argument("--report", type=Path)
+    parser.add_argument(
+        "--release-artifact",
+        type=Path,
+        help="Use this local APK for isolated release upload/download validation",
+    )
     parser.add_argument(
         "--smoke-only",
         action="store_true",
@@ -139,13 +239,14 @@ def verify(args):
             serialization.NoEncryption(),
         )
     )
-    configuration = verification_stack(args.api_image)
+    release_key = secrets.token_urlsafe(48)
+    configuration = verification_stack(args.api_image, release_key)
     configuration["name"] = directory.name
     configuration["services"]["postgres"]["volumes"] = ["test_pgdata:/var/lib/postgresql/data"]
-    configuration["volumes"] = {"test_pgdata": {}}
+    configuration.setdefault("volumes", {})["test_pgdata"] = {}
     api = configuration["services"]["api"]
     api["ports"] = ["127.0.0.1:18380:8000"]
-    api["volumes"] = [f"{linux(directory / 'ca.pem')}:/tls/ca.pem:ro"]
+    api.setdefault("volumes", []).append(f"{linux(directory / 'ca.pem')}:/tls/ca.pem:ro")
     api["environment"]["APP_DATA_DSM_CA"] = "/tls/ca.pem"
     configuration["services"]["mock-dsm"] = {
         "image": args.api_image,
@@ -168,6 +269,7 @@ def verify(args):
         "validationScope": "artifact-and-startup" if args.smoke_only else "full-business",
         "businessTests": "not_run" if args.smoke_only else "requested",
         "real_nas_tested": False,
+        "apiImage": args.api_image,
     }
     started = False
     stage = "postgres_startup"
@@ -257,6 +359,72 @@ def verify(args):
                 assert client.get(base + "/health").json() == {"status": "ok"}
                 assert client.get(base + "/.well-known/jwks.json").json()["keys"]
                 report["api_health_and_public_key"] = True
+                stage = "public_release_permissions_and_io"
+                subprocess.run(
+                    [
+                        *compose,
+                        "exec",
+                        "-T",
+                        "api",
+                        "python",
+                        "-c",
+                        "import os; from pathlib import Path; "
+                        "assert os.getuid()==10001 and os.getgid()==10001; "
+                        "assert Path('/data/app-releases').stat().st_uid==10001",
+                    ],
+                    check=True,
+                    timeout=15,
+                )
+                report["non_root_release_volume_permissions"] = True
+                report["publicRelease"] = verify_public_release(
+                    client, base, release_key, getattr(args, "release_artifact", None)
+                )
+                saved = subprocess.check_output(
+                    [
+                        *compose,
+                        "exec",
+                        "-T",
+                        "postgres",
+                        "psql",
+                        "-U",
+                        "app_admin",
+                        "-d",
+                        "app_data",
+                        "-tAc",
+                        "SELECT count(*) FROM core.public_releases "
+                        "WHERE app_id='board_game_agent' AND architecture='any'",
+                    ],
+                    text=True,
+                    timeout=15,
+                )
+                assert saved.strip() == "1"
+                report["publicRelease"]["sqlPublication"] = True
+                stage = "public_release_restart_persistence"
+                subprocess.run([*compose, "restart", "api"], check=True, timeout=60)
+                deadline = time.monotonic() + 45
+                while True:
+                    try:
+                        restored = client.get(
+                            base + "/v1/apps/board_game_agent/releases/manifest",
+                            params={"platform": "android", "architecture": "arm64"},
+                        )
+                        if restored.status_code == 200:
+                            break
+                    except httpx.TransportError:
+                        pass
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("API restart did not restore the published release")
+                    time.sleep(0.25)
+                assert (
+                    restored.json()["artifacts"][0]["sha256"] == report["publicRelease"]["sha256"]
+                )
+                digest = report["publicRelease"]["sha256"]
+                again = client.get(
+                    base + f"/v1/apps/board_game_agent/releases/artifacts/{digest}.apk",
+                    headers={"Range": "bytes=0-31"},
+                )
+                assert again.status_code == 206 and len(again.content) == 32
+                report["publicRelease"]["persistedAfterRestart"] = True
                 write_report(report, directory, args.report)
                 return
             users = {}

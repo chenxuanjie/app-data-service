@@ -21,6 +21,7 @@ from uuid import uuid4
 
 import yaml
 from archive_cache import cached_dependency
+from configure_public_releases import validate_delivery as validate_release_delivery
 from docker_runtime import docker_runtime
 from image_archives import validate_archive as validate_archive
 from render_stack import remove_board_library_startup
@@ -149,6 +150,18 @@ def build(args, log=None):
             name = "docker-preflight" if "info" in command else "compose-validation"
         return log.run(name, command, timeout=kwargs.pop("timeout", 120), cwd=ROOT, **kwargs)
 
+    configuration = yaml.safe_load(args.compose.read_text(encoding="utf-8-sig"))
+    if set(configuration["services"]) != {"postgres", "api", "powersync"}:
+        raise ValueError("Use the current three-service test Compose")
+    if any(
+        key in service
+        for service in configuration["services"].values()
+        for key in ["build", "env_file"]
+    ):
+        raise ValueError("Deployment must be self-contained")
+    validate_api_configuration(configuration)
+    validate_release_delivery(configuration)
+
     run([*docker, "info", "--format", "{{.OSType}}"], timeout=120)
     run([*docker, "buildx", "version"], timeout=120)
     network_script = ROOT / "tools/build_preflight.py"
@@ -159,16 +172,6 @@ def build(args, log=None):
     )
     run(network_command, timeout=180)
 
-    configuration = yaml.safe_load(args.compose.read_text(encoding="utf-8"))
-    if set(configuration["services"]) != {"postgres", "api", "powersync"}:
-        raise ValueError("Use the current three-service test Compose")
-    if any(
-        key in service
-        for service in configuration["services"].values()
-        for key in ["build", "env_file"]
-    ):
-        raise ValueError("Deployment must be self-contained")
-    validate_api_configuration(configuration)
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
         "version"
     ]
@@ -372,6 +375,7 @@ def build(args, log=None):
     for service in configuration["services"].values():
         service["pull_policy"] = "never"
     rendered = delivery / "docker-compose.yml"
+    validate_release_delivery(configuration)
     rendered.write_text(
         yaml.safe_dump(configuration, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )

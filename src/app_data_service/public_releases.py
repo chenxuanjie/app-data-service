@@ -30,7 +30,7 @@ NAME = r"^[a-z0-9][a-z0-9_-]{0,39}$"
 class Artifact(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     platform: str = Field(pattern=r"^(android|windows)$")
-    architecture: str = Field(pattern=r"^(arm64|arm|x64|x86|universal)$")
+    architecture: str = Field(pattern=r"^(arm64|arm|x64|x86|any)$")
     path: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,199}\.(apk|exe)$")
     size: int = Field(gt=0, le=MAX_ARTIFACT)
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -159,9 +159,11 @@ def install(router, runtime, prefix):
     def latest(
         app_id: Application,
         platform: str = Query(pattern=r"^(android|windows)$"),
-        architecture: str = Query(pattern=r"^(arm64|arm|x64|x86|universal)$"),
+        architecture: str = Query(pattern=r"^(arm64|arm|x64|x86|any)$"),
         channel: str = Query(default="stable", pattern=NAME),
     ):
+        if platform == "windows" and architecture != "x64":
+            raise HTTPException(422, "release_target_invalid")
         storage(app_id)
         with transaction(runtime.engine, app_id) as c:
             row = (
@@ -170,7 +172,7 @@ def install(router, runtime, prefix):
                     .where(
                         m.releases.c.channel == channel,
                         m.releases.c.platform == platform,
-                        m.releases.c.architecture.in_([architecture, "universal"]),
+                        m.releases.c.architecture.in_([architecture, "any"]),
                     )
                     .order_by(
                         m.releases.c.build_number.desc(),

@@ -2,9 +2,13 @@
 
 import hashlib
 import json
+import runpy
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
@@ -200,3 +204,75 @@ def test_windows_and_android_have_independent_public_versions(service):
     assert client.get(BASE + "/artifacts/" + digest + ".exe").content == data
     body["releaseRecord"] = {"artifacts": None}
     assert client.post(BASE + "/publish", json=body, headers=headers()).status_code == 422
+
+
+def test_generic_any_apk_uses_the_same_contract_for_all_device_abis(service):
+    client, _ = service
+    body = publication()
+    body["artifacts"][0]["architecture"] = "any"
+    result = publish(client, body)
+    assert result["artifacts"][0]["architecture"] == "any"
+    for architecture in ("any", "arm64", "arm", "x64", "x86"):
+        response = client.get(BASE + f"/manifest?platform=android&architecture={architecture}")
+        assert response.status_code == 200, response.text
+        assert response.json() == result
+    assert client.get(BASE + "/manifest?platform=android&architecture=universal").status_code == 422
+    body["artifacts"][0]["architecture"] = "universal"
+    assert client.post(BASE + "/publish", json=body, headers=headers()).status_code == 422
+    assert client.get(BASE + "/manifest?platform=windows&architecture=any").status_code == 422
+    assert client.get(BASE + "/artifacts/" + DIGEST + ".apk").content == DATA
+
+
+def test_forward_migration_normalizes_existing_target_without_rewriting_audit(service, db):
+    client, _ = service
+    publish(client)
+    assert db.runtime.url.database.startswith("app_data_test_")
+    with transaction(db.runtime, "board_game_agent") as c:
+        row = dict(c.execute(sa.select(m.releases)).mappings().one())
+    original_audit = publication(9002)
+    original_audit["artifacts"][0]["architecture"] = "universal"
+    with db.migrator.connect() as c:
+        tx = c.begin()
+        try:
+            # Only conftest's random test DB; rollback restores all schema/data.
+            c.exec_driver_sql("ALTER TABLE core.public_releases NO FORCE ROW LEVEL SECURITY")
+            c.exec_driver_sql(
+                "ALTER TABLE core.public_releases "
+                "DROP CONSTRAINT public_releases_architecture_check"
+            )
+            c.exec_driver_sql(
+                "ALTER TABLE core.public_releases "
+                "ADD CONSTRAINT public_releases_architecture_check "
+                "CHECK(architecture IN ('arm64','arm','x64','x86','universal'))"
+            )
+            c.execute(
+                m.releases.insert().values(
+                    **(
+                        row
+                        | {
+                            "architecture": "universal",
+                            "build_number": 9002,
+                            "record": original_audit,
+                        }
+                    )
+                )
+            )
+            c.exec_driver_sql("ALTER TABLE core.public_releases FORCE ROW LEVEL SECURITY")
+            path = Path(__file__).parents[1] / "migrations/versions/0016_release_architecture.py"
+            with Operations.context(MigrationContext.configure(c)):
+                runpy.run_path(str(path))["upgrade"]()
+            # FORCE RLS remains active for the non-runtime owner after migration.
+            assert c.exec_driver_sql(
+                "SELECT relforcerowsecurity FROM pg_class "
+                "WHERE oid='core.public_releases'::regclass"
+            ).scalar_one()
+            # Inspect inside this same transaction; it is always rolled back.
+            c.exec_driver_sql("ALTER TABLE core.public_releases NO FORCE ROW LEVEL SECURITY")
+            migrated = (
+                c.execute(sa.select(m.releases).where(m.releases.c.build_number == 9002))
+                .mappings()
+                .one()
+            )
+            assert migrated["architecture"] == "any" and migrated["record"] == original_audit
+        finally:
+            tx.rollback()

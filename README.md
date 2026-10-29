@@ -5,7 +5,7 @@
 GitHub Actions 自动构建 API 并发布到 GHCR，镜像标签及群晖拉取更新方式见
 [GHCR 构建与更新](docs/ghcr.md)。本地离线镜像归档流程继续保留。
 
-游客 APK/EXE 升级与独立机器发布权限见 [公开安装包发布](docs/public-releases.md)。该功能需要迁移 0015 和新 API 镜像；WebDAV 备用发布保留，未自动构建或部署。
+游客 APK/EXE 升级与独立机器发布权限见 [公开安装包发布](docs/public-releases.md)。修复后的契约需要迁移 0016、新 API 镜像和完整发布 Compose；通用 Android 架构统一为 any。WebDAV 备用发布保留，未自动构建或部署。
 
 当前功能分支 `feature/multi-app-foundation` 已实现多应用模块化基础，尚未构建新镜像或部署。
 公共账号、会话、权限和数据空间与各应用业务分离；Zheri 客户端不在本轮修改范围，桌游客户端已在独立分支接入账号和阶段 2、3 业务。
