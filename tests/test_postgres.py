@@ -36,7 +36,7 @@ def sqlstate(error):
 def test_real_postgres_migration_and_publication(db):
     report = inspect_database(db.urls["migrator"])
     assert report["postgres"].startswith("17.")
-    assert report["revision"] == "0016_release_architecture"
+    assert report["revision"] == "0017_publication_versions"
     assert report["wal_level"] == "logical"
     assert report["publication"] == [
         "board_game_agent.conversations",
@@ -48,6 +48,7 @@ def test_real_postgres_migration_and_publication(db):
         "board_game_agent.votes",
         "core.dataset_members",
         "core.datasets",
+        "core.publication_versions",
         "zheri.asset_allocations",
         "zheri.assets",
         "zheri.business_preferences",

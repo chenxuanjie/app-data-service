@@ -47,7 +47,7 @@
 
 打包器在镜像/网络构建前、生成最终交付 Compose 时检查公共内容应用的 releases 根、独立可写卷和发布密钥摘要。缺少配置时直接失败，不再交付一个会返回 release_storage_not_configured 的文件；不会自动生成密钥或替换部署身份。构建成功后使用 `release/docker-compose.yml`，不能用旧输入中的镜像标签代替新交付结果。
 
-必须先构建包含 0016 的新 API 镜像，匹配镜像标签后更新 Compose。API 常规启动按迁移头升级，不重跑旧资料导入。仅更换 YAML 不能修复旧 API 的架构校验。PostgreSQL 和 PowerSync 镜像无需升级，本阶段不修改同步流。配置正确、尚未发布时清单应返回 404 release_not_published；503 表示配置或服务仍有故障。
+P1 的架构修复要求迁移 `0016_release_architecture`；P2 通知还要求其后的 `0017_publication_versions`。API 常规启动按迁移头升级，不重跑旧资料导入。仅更换 YAML 不会使旧镜像出现新接口。PostgreSQL 和 PowerSync 镜像无需升级；P2 须配套更新 PowerSync 配置，见 [公开发布通知](publication-notifications.md)。配置正确、尚未发布时清单应返回 404 release_not_published；503 表示配置或服务仍有故障。
 
 ## 发布器
 

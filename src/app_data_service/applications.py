@@ -188,7 +188,14 @@ class ApplicationRegistry:
         return result
 
     def sync_config(self):
-        streams = {}
+        streams = {
+            "public_publication_versions": {
+                "auto_subscribe": True,
+                "query": "SELECT * FROM core.publication_versions "
+                "WHERE app_id=auth.parameter('app_id') "
+                "AND auth.parameter('sync_scope')='public'",
+            }
+        }
         for definition in self.definitions:
             for key, value in definition.sync_streams.items():
                 if key in streams:
@@ -199,7 +206,7 @@ class ApplicationRegistry:
     @property
     def publication_tables(self):
         return sorted(
-            {"core.datasets", "core.dataset_members"}
+            {"core.datasets", "core.dataset_members", "core.publication_versions"}
             | {table for definition in self.definitions for table in definition.replication_tables}
         )
 

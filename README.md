@@ -1,15 +1,17 @@
-> 当前开发源码包含桌游个人/社区业务，以及 [SQL 资料库、一次性导入与统一发布](docs/library-catalog.md)。资料库需要 0014 迁移，Flutter 资料读取尚未切换；本轮没有构建或部署镜像。社区与私人同步见 [桌游业务契约](docs/board-game-business.md)。以下为此前阶段记录。
+> 当前开发源码包含桌游个人/社区业务、[SQL 资料库、一次性导入与统一发布](docs/library-catalog.md)，以及 P2 公开发布通知。Flutter 资料读取已切换 SQL API；P2 需要迁移至 0017 和配套同步规则，本轮未构建或部署 P2 镜像。社区与私人同步见 [桌游业务契约](docs/board-game-business.md)。
 
 # Flutter 应用数据服务
 
 GitHub Actions 自动构建 API 并发布到 GHCR，镜像标签及群晖拉取更新方式见
 [GHCR 构建与更新](docs/ghcr.md)。本地离线镜像归档流程继续保留。
 
-游客 APK/EXE 升级与独立机器发布权限见 [公开安装包发布](docs/public-releases.md)。修复后的契约需要迁移 0016、新 API 镜像和完整发布 Compose；通用 Android 架构统一为 any。WebDAV 备用发布保留，未自动构建或部署。
+游客 APK/EXE 升级与独立机器发布权限见 [公开安装包发布](docs/public-releases.md)。P1 修复已由 API 0.5.1 交付 GHCR 和配套 Compose，包含迁移 0016、独立安装包存储与发布权限；通用 Android 架构统一为 any。WebDAV 备用发布保留。
 
-当前功能分支 `feature/multi-app-foundation` 已实现多应用模块化基础，尚未构建新镜像或部署。
+资料和程序版本的匿名实时发现见 [公开发布通知](docs/publication-notifications.md)。P2 需要迁移 0017、新 API 镜像及配套 PowerSync 规则，安装包和资料仍通过原权威 API 按需读取。
+
+当前功能分支 `feature/board-game-business` 已实现多应用模块化基础、桌游业务及发布服务。
 公共账号、会话、权限和数据空间与各应用业务分离；Zheri 客户端不在本轮修改范围，桌游客户端已在独立分支接入账号和阶段 2、3 业务。
-源码包元数据仍为 0.5.0，尚未形成新发布版本。新增迁移 0010/0011 和应用配置需与 API 镜像、同步规则配套上线。
+源码包元数据为 0.5.2。上线需同时匹配 API 镜像、数据库迁移头、应用配置和 PowerSync 规则，不能仅更新某一端；构建、交付与现场验收以实际结果为准。
 
 - [架构与目录](docs/architecture.md)
 - [应用/API/部署契约](docs/application-scope.md)

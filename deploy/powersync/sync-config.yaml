@@ -2,6 +2,10 @@ config:
   edition: 3
   storage_version: 2
 streams:
+  public_publication_versions:
+    auto_subscribe: true
+    query: SELECT * FROM core.publication_versions WHERE app_id=auth.parameter('app_id')
+      AND auth.parameter('sync_scope')='public'
   private_expenses:
     auto_subscribe: true
     query: "SELECT expenses.* FROM zheri.expenses\nWHERE deleted_at IS NULL AND dataset_id\

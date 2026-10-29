@@ -39,6 +39,7 @@ def service(db, tmp_path, monkeypatch):
         # This fixture owns the random test DB. FORCE RLS intentionally makes
         # ordinary DELETE ineffective; truncate only these two test tables.
         c.exec_driver_sql("TRUNCATE core.public_releases,core.release_blobs")
+        c.exec_driver_sql("DELETE FROM core.publication_versions WHERE topic='release'")
     authority = TokenAuthority(
         rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
             serialization.Encoding.PEM,

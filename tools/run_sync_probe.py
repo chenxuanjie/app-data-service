@@ -87,14 +87,16 @@ def check_board_public_scope(authority):
         raise RuntimeError("Public scope stream ended without checkpoint")
 
     assert "favorites" in tables(False), "Expected fixture private favorites"
-    assert tables(True) == {"public_changes"}, "Public credentials leaked private data"
+    assert tables(True) == {"public_changes", "publication_versions"}, (
+        "Public credentials leaked private data or omitted publication watermarks"
+    )
     print(
         "Public sync scope: forged subject/parameters/subscriptions cannot read private rows",
         flush=True,
     )
 
 
-def check_application_streams(authority):
+def check_application_streams(authority, source):
     """Black-box the pinned 1.27.0 NDJSON endpoint, including forged client parameters.
 
     Protocol: packages/service-core/src/util/protocol-types.ts and
@@ -102,7 +104,7 @@ def check_application_streams(authority):
     This is a bounded diagnostic, never a replacement client sync engine.
     """
 
-    def download(app_id, actor="alice", *, explicit=False, token=None):
+    def download(app_id, actor="alice", *, explicit=False, token=None, details=False):
         token = token or authority.issue(actor, SYNC_AUDIENCE, app_id=app_id)
         body = {
             "buckets": [],
@@ -120,7 +122,7 @@ def check_application_streams(authority):
                     }
                 ],
             }
-        objects, total = set(), 0
+        objects, total = {}, 0
         with (
             httpx.Client(trust_env=False, timeout=10) as client,
             client.stream(
@@ -140,9 +142,12 @@ def check_application_streams(authority):
                 value = json.loads(line)
                 for entry in value.get("data", {}).get("data", []):
                     if entry.get("op") == "PUT":
-                        objects.add(entry["object_id"])
+                        data = entry.get("data", {})
+                        objects[entry["object_id"]] = (
+                            json.loads(data) if isinstance(data, str) else data
+                        )
                 if "checkpoint_complete" in value:
-                    return objects
+                    return objects if details else set(objects)
         raise RuntimeError("PowerSync closed before a complete checkpoint")
 
     deadline = time.monotonic() + 35
@@ -172,6 +177,42 @@ def check_application_streams(authority):
 
     unscoped = jwt.encode(claims, authority.key, algorithm="RS256", headers={"kid": authority.kid})
     assert download("zheri", token=unscoped) == set(), "Unscoped token received app data"
+
+    public_token = authority.issue(
+        "public:board_game_agent",
+        SYNC_AUDIENCE,
+        app_id="board_game_agent",
+        extra={"sync_scope": "public"},
+    )
+
+    def watermark():
+        data = download("board_game_agent", token=public_token, details=True)
+        assert set(data) <= {"board_game_agent:catalog"}, "Public stream leaked private objects"
+        return data.get("board_game_agent:catalog", {}).get("revision")
+
+    deadline = time.monotonic() + 35
+    while watermark() != 0:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Public publication snapshot startup")
+        time.sleep(0.2)
+    # This engine and catalog belong only to this disposable probe database.
+    # No client has SQL credentials; verify WAL delivery and fresh-checkpoint catch-up.
+    with source.begin() as c:
+        c.exec_driver_sql("INSERT INTO board_game_agent.library_releases(revision) VALUES(1)")
+        c.exec_driver_sql("UPDATE board_game_agent.library_head SET revision=1 WHERE id=1")
+    deadline = time.monotonic() + 35
+    while watermark() != 1:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Public publication WAL convergence")
+        time.sleep(0.2)
+    assert watermark() == 1, "Reconnected public reader missed committed publication"
+    other_public = authority.issue(
+        "public:zheri",
+        SYNC_AUDIENCE,
+        app_id="zheri",
+        extra={"sync_scope": "public"},
+    )
+    assert download("zheri", token=other_public) == set(), "Public watermark escaped app scope"
     return {
         "passed": [
             "zheri_signed_app_download",
@@ -182,6 +223,8 @@ def check_application_streams(authority):
             "third_application_own_stream_download",
             "third_application_rejects_cross_app_subscription",
             "third_application_cross_user_isolation",
+            "anonymous_publication_snapshot_and_wal_convergence",
+            "public_publication_reconnect_and_application_isolation",
         ],
         "platform": "powersync-service-1.27.0",
     }
@@ -500,7 +543,7 @@ def probe(args):
         )
         if args.application_scope_only:
             print("PowerSync healthy; checking signed application streams", flush=True)
-            summary = check_application_streams(authority)
+            summary = check_application_streams(authority, source)
             print(json.dumps(summary), flush=True)
             (directory / "result.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             return
