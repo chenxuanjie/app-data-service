@@ -68,6 +68,24 @@ def verification_stack(api_image, release_key="isolated-fixture-release-key-not-
 def verify_public_release(client, base, key, artifact_path=None):
     """Exercise public release IO with a fixture or an explicitly selected local APK."""
     prefix = base + "/v1/apps/board_game_agent/releases"
+    source_revision = "a" * 40
+    reserved = client.post(
+        prefix + "/batches",
+        headers={"X-Release-Publish-Key": key},
+        json={
+            "requestKey": "stack-verification-" + secrets.token_hex(16),
+            "versionName": "1.0.0",
+            "minimumBuild": 0,
+        },
+    )
+    assert reserved.status_code == 200, "Release batch reservation failed"
+    batch = reserved.json()
+    frozen = client.put(
+        prefix + f"/batches/{batch['batchId']}/source",
+        headers={"X-Release-Publish-Key": key},
+        json={"sourceRevision": source_revision},
+    )
+    assert frozen.status_code == 200, "Release batch source freeze failed"
     if artifact_path:
         with artifact_path.open("rb") as content:
             digest = hashlib.file_digest(content, "sha256").hexdigest()
@@ -98,9 +116,10 @@ def verify_public_release(client, base, key, artifact_path=None):
     payload = {
         "schemaVersion": 1,
         "appId": "board_game_agent",
+        "batchId": batch["batchId"],
         "channel": "stable",
         "versionName": "1.0.0",
-        "buildNumber": 1,
+        "buildNumber": batch["buildNumber"],
         "minimumSupportedBuild": 0,
         "forceUpdate": False,
         "publishedAt": datetime.now(UTC).isoformat(),
@@ -116,6 +135,8 @@ def verify_public_release(client, base, key, artifact_path=None):
             }
         ],
     }
+    payload["releaseRecord"] = {**payload, "gitCommit": source_revision}
+    payload["releaseRecord"].pop("batchId")
     assert client.post(prefix + "/publish", json=payload).status_code == 403
     response = client.post(prefix + "/publish", json=payload, headers=headers)
     assert response.status_code == 200, "SQL release publication failed"
