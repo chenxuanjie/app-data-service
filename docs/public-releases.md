@@ -23,9 +23,25 @@
 | GET `/manifest?platform=android&architecture=arm64&channel=stable` | 游客读取目标最新清单；未发布返回 404 |
 | GET/HEAD `/artifacts/<sha256>.apk` 或 `.exe` | 只允许下载已发布对象；支持 Range，ETag 为摘要 |
 | PUT `/objects/<sha256>` | 需要应用发布密钥；流式上传并校验摘要和长度 |
-| POST `/publish` | 需要发布密钥；复核文件后原子提交一个目标的版本及来源记录 |
+| POST `/batches` | 应用发布密钥；幂等申请一次构建编号 |
+| GET `/batches/<batch-id>` | 应用发布密钥；查看批次来源及各平台结果 |
+| PUT `/batches/<batch-id>/source` | 应用发布密钥；提交后冻结应用及依赖 commit |
+| PUT `/batches/<batch-id>/targets` | 应用发布密钥；登记镜像结果或安装包失败；成功安装包必须走已验证发布接口 |
+| POST `/publish` | 需要发布密钥及 batchId；复核文件后原子提交一个目标的版本、来源及批次目标 |
 
 发布 JSON 复用 remote_update 的 schemaVersion=1 清单，单次一个 Android/Windows 目标；`releaseRecord` 保存 publisher 不可变来源记录。公开清单不返回私有记录。Android 架构为 any、arm64、arm、x64、x86；any 为通用包，与客户端 remote_update 及现有 publisher 记录一致。Windows 仅 x64。按通道与目标分别选择，相同构建号优先具体架构；较新通用包可以覆盖旧具体架构包。相同版本重试内容必须相同；较低版本或同版本不同内容返回 409。历史已发布对象仍可通过摘要 URL 下载。
+
+## 统一程序批次（0018）
+
+新增 `core.release_counters`、`core.release_batches` 和 `core.release_targets`，以 app_id 隔离，并强制 RLS 与应用机器发布权限；普通账号和游客不能读写。表不加入 PowerSync，桌游资料、账号与已有升级下载不受影响。历史安装包记录不重写，计数时纳入其最大构建号；各应用独立计数，各平台共用批次编号。
+
+`POST /batches` 接收 requestKey（16..100 位安全标识）、明确的 versionName（三段语义版本）与 minimumBuild（本机已声明编号）。事务按应用串行分配 `max(历史发布号, 已分配号, minimumBuild)+1`，上限 2147483647；同请求键同版本重试返回原批次，不回收失败编号。事务有界等待，不在数据库里推断语义版本应升哪一位。
+
+准备工具先将申请结果写到 pubspec 与不含 commit 的 release-batch.json；提交后，`PUT /source` 接收完整 sourceRevision 及 dependencyRevisions 映射，冻结后不可更改。新 `/publish` 请求必须带 batchId，版本、构建号及 releaseRecord.gitCommit 必须与冻结记录一致；安装包发布记录与目标结果在同一事务提交。旧发布器缺 batchId 将被拒绝，需要配套更新；游客 GET/HEAD 无需升级协议。
+
+镜像目标记录 component、platform、architecture、channel、status（built/published/failed）、不可变 reference 与 sha256、sourceRevision；复用辅助镜像另带 reused 与 inputDigest，保留原始来源。已发布内容不可替换，相同内容可重试且不会因重复登记 built 降级；失败登记只接收安全 errorCode。GHCR 与数据库之间没有分布式事务，渠道更新及状态回写中断后应核对重试，不宣称 NAS 已部署。
+
+部署这组接口需要新 API 镜像及 `0018_release_batches` 迁移；沿用已有发布密钥配置，无需更换 PostgreSQL/PowerSync 镜像或重新导入资料。依据实际 Compose 的迁移开关执行一次升级，不能仅凭改文档认定已在 NAS 生效。
 
 安装包上限 1 GiB，两个并发上传，上传预算 15 分钟；八个并发文件响应，每次最多 10 分钟。普通 JSON 仍有 512 KiB/10 秒限制；仅精确匹配的安装包 PUT 走独立流式入口，读正文前鉴权。失败不切换发布版本，不自动删除历史对象。外部 HTTPS 反向代理须允许相应大小和上传时长。
 
@@ -47,12 +63,12 @@
 
 打包器在镜像/网络构建前、生成最终交付 Compose 时检查公共内容应用的 releases 根、独立可写卷和发布密钥摘要。缺少配置时直接失败，不再交付一个会返回 release_storage_not_configured 的文件；不会自动生成密钥或替换部署身份。构建成功后使用 `release/docker-compose.yml`，不能用旧输入中的镜像标签代替新交付结果。
 
-P1 的架构修复要求迁移 `0016_release_architecture`；P2 通知还要求其后的 `0017_publication_versions`。API 常规启动按迁移头升级，不重跑旧资料导入。仅更换 YAML 不会使旧镜像出现新接口。PostgreSQL 和 PowerSync 镜像无需升级；P2 须配套更新 PowerSync 配置，见 [公开发布通知](publication-notifications.md)。配置正确、尚未发布时清单应返回 404 release_not_published；503 表示配置或服务仍有故障。
+P1 的架构修复要求迁移 `0016_release_architecture`；P2 通知还要求其后的 `0017_publication_versions`，统一程序批次要求 `0018_release_batches`。按实际 Compose 的迁移开关显式升级数据库结构，不重跑旧资料导入。仅更换 YAML 不会使旧镜像出现新接口。PostgreSQL 和 PowerSync 镜像无需升级；P2 须配套更新 PowerSync 配置，见 [公开发布通知](publication-notifications.md)。配置正确、尚未发布时清单应返回 404 release_not_published；503 表示配置或服务仍有故障。
 
 ## 发布器
 
 新增 `publishDestination: service` 与 `releaseService.configFile`。桌游 profile 默认选择 service；其他工程保持原目的地。`--destination webdav` 显式选择原发布器，原凭据和目录不变。新目的地缺配置时明确失败，不自动回退。
 
-流程：本地产物与来源校验 → 流式上传并由服务端验摘要 → 提交版本和来源记录 → 匿名 HEAD 验证下载。修改功能不授权实际上传、部署或构建。
+流程：统一准备批次 → 提交版本及来源 → 冻结 → 本地产物与来源校验 → 流式上传并由服务端验摘要 → 提交 batchId、版本和来源记录 → 匿名 HEAD 验证下载。修改功能不授权实际申请编号、上传、部署或构建。
 
 流式上传之前先匿名 GET 目标清单；404 允许首次发布，503/422 等错误在发送大包前终止。发布器同时核对 profile、清单、不可变记录及服务端回执的架构，输出允许公开的安全错误码，不打印原始响应或密钥。

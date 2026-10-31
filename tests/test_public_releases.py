@@ -23,10 +23,12 @@ BASE = "/v1/apps/board_game_agent/releases"
 KEY = "test-release-publishing-machine-secret-only"
 DATA = b"PK\x03\x04" + b"test-installer" * 50000
 DIGEST = hashlib.sha256(DATA).hexdigest()
+CURRENT_BATCH = "00000000-0000-4000-8000-000000000001"
 
 
 @pytest.fixture
 def service(db, tmp_path, monkeypatch):
+    global CURRENT_BATCH
     monkeypatch.setenv(
         "APP_DATA_RELEASE_PUBLISH_KEY_HASHES",
         json.dumps(
@@ -38,7 +40,10 @@ def service(db, tmp_path, monkeypatch):
     with db.migrator.begin() as c:
         # This fixture owns the random test DB. FORCE RLS intentionally makes
         # ordinary DELETE ineffective; truncate only these two test tables.
-        c.exec_driver_sql("TRUNCATE core.public_releases,core.release_blobs")
+        c.exec_driver_sql(
+            "TRUNCATE core.public_releases,core.release_blobs,"
+            "core.release_targets,core.release_batches,core.release_counters"
+        )
         c.exec_driver_sql("DELETE FROM core.publication_versions WHERE topic='release'")
     authority = TokenAuthority(
         rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
@@ -57,6 +62,25 @@ def service(db, tmp_path, monkeypatch):
         },
     )
     with TestClient(app) as client:
+        reserved = client.post(
+            BASE + "/batches",
+            headers=headers(),
+            json={
+                "requestKey": "fixture-release-batch-9001",
+                "versionName": "9.0.1",
+                "minimumBuild": 9000,
+            },
+        )
+        assert reserved.status_code == 200, reserved.text
+        batch_id = reserved.json()["batchId"]
+        frozen = client.put(
+            BASE + f"/batches/{batch_id}/source",
+            headers=headers(),
+            json={"sourceRevision": "a" * 40},
+        )
+        assert frozen.status_code == 200, frozen.text
+        client.release_batch_id = batch_id
+        CURRENT_BATCH = batch_id
         yield client, tmp_path
 
 
@@ -65,9 +89,10 @@ def headers():
 
 
 def publication(build=9001):
-    return {
+    result = {
         "schemaVersion": 1,
         "appId": "board_game_agent",
+        "batchId": CURRENT_BATCH,
         "channel": "stable",
         "versionName": "9.0.1",
         "buildNumber": build,
@@ -86,12 +111,34 @@ def publication(build=9001):
             }
         ],
     }
+    result["releaseRecord"] = {**result, "gitCommit": "a" * 40}
+    result["releaseRecord"].pop("batchId")
+    return result
 
 
 def publish(client, body=None):
+    body = body or publication()
+    if body["buildNumber"] != 9001:
+        row = client.post(
+            BASE + "/batches",
+            headers=headers(),
+            json={
+                "requestKey": "fixture-release-batch-" + str(body["buildNumber"]),
+                "versionName": body["versionName"],
+                "minimumBuild": body["buildNumber"] - 1,
+            },
+        ).json()
+        assert row["buildNumber"] == body["buildNumber"]
+        body["batchId"] = row["batchId"]
+        frozen = client.put(
+            BASE + f"/batches/{row['batchId']}/source",
+            headers=headers(),
+            json={"sourceRevision": "a" * 40},
+        )
+        assert frozen.status_code == 200
     uploaded = client.put(BASE + "/objects/" + DIGEST, content=DATA, headers=headers())
     assert uploaded.status_code == 200, uploaded.text
-    result = client.post(BASE + "/publish", json=body or publication(), headers=headers())
+    result = client.post(BASE + "/publish", json=body, headers=headers())
     assert result.status_code == 200, result.text
     return result.json()
 
@@ -184,7 +231,7 @@ def test_windows_and_android_have_independent_public_versions(service):
     assert (
         client.put(BASE + "/objects/" + digest, content=data, headers=headers()).status_code == 200
     )
-    body = publication(7000)
+    body = publication()
     body["artifacts"] = [
         {
             "platform": "windows",
@@ -195,11 +242,12 @@ def test_windows_and_android_have_independent_public_versions(service):
             "mimeType": "application/octet-stream",
         }
     ]
+    body["releaseRecord"]["artifacts"] = body["artifacts"]
     result = client.post(BASE + "/publish", json=body, headers=headers())
     assert result.status_code == 200
     assert (
         client.get(BASE + "/manifest?platform=windows&architecture=x64").json()["buildNumber"]
-        == 7000
+        == 9001
     )
     assert client.get(BASE + "/manifest?platform=android&architecture=arm64").json() == android
     assert client.get(BASE + "/artifacts/" + digest + ".exe").content == data

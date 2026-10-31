@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.dialects.postgresql import insert
 from starlette.responses import FileResponse
 
+from . import release_batches
 from . import release_models as m
 from .dependencies import Application
 
@@ -41,6 +42,7 @@ class Publication(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     schemaVersion: int = Field(ge=1, le=1)
     appId: str = Field(pattern=NAME)
+    batchId: str = Field(pattern=release_batches.UUID)
     channel: str = Field(pattern=NAME)
     versionName: str = Field(min_length=1, max_length=80)
     buildNumber: int = Field(gt=0, le=2**53 - 1)
@@ -139,6 +141,8 @@ def install(router, runtime, prefix):
             hashlib.sha256(candidate.encode()).hexdigest(), expected
         ):
             raise HTTPException(403, "release_publish_denied")
+
+    release_batches.install(router, runtime, prefix, publishing_key, transaction)
 
     async def verify(path, digest, size):
         try:
@@ -347,6 +351,10 @@ def install(router, runtime, prefix):
         await verify(object_path(storage(app_id), artifact.sha256), artifact.sha256, artifact.size)
         record = body.model_dump()
         with transaction(runtime.engine, app_id, publishing=True) as c:
+            batch = release_batches.batch(c, app_id, body.batchId, lock=True)
+            release_batches.require_source(
+                batch, body.versionName, body.buildNumber, audit.get("gitCommit")
+            )
             c.execute(
                 sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:key,1515))"),
                 {
@@ -391,4 +399,19 @@ def install(router, runtime, prefix):
                 "record": record,
             }
             c.execute(m.releases.insert().values(**row))
+            release_batches.register(
+                c,
+                batch,
+                release_batches.Target(
+                    component="client",
+                    kind="installer",
+                    platform=artifact.platform,
+                    architecture=artifact.architecture,
+                    channel=body.channel,
+                    status="published",
+                    sha256=artifact.sha256,
+                    size=artifact.size,
+                    sourceRevision=audit["gitCommit"],
+                ),
+            )
         return JSONResponse(manifest(row), headers={"Cache-Control": "no-store"})
