@@ -122,8 +122,11 @@ def _summaries(c, rows, locale):
 
 
 class CatalogFiles:
-    def __init__(self, root):
+    def __init__(self, root, *, nginx_files=False):
+        if not isinstance(nginx_files, bool):
+            raise ValueError("nginx_library_files must be a boolean")
         self.root = root
+        self.nginx_files = nginx_files
         self.verified = {}
 
     def response(self, blob, resource, request):
@@ -155,18 +158,33 @@ class CatalogFiles:
         name = Path(resource["path"]).name
         # Imported HTML/SVG cannot execute scripts under the account/API origin.
         attachment = Path(name).suffix.lower() in {".html", ".svg"}
-        return FileResponse(
+        response = FileResponse(
             path,
             media_type=mimetypes.guess_type(name)[0] or "application/octet-stream",
             headers=headers,
             filename=name,
             content_disposition_type="attachment" if attachment else "inline",
+            stat_result=status,
         )
+        if self.nginx_files and request.headers.get("x-bga-file-delivery") == "nginx":
+            digest = blob["sha256"]
+            if blob["storage_key"] != f"blobs/{digest[:2]}/{digest}":
+                raise HTTPException(503, "library_content_integrity_failure")
+            # This is a transport hint, not authentication. SQL visibility and
+            # on-disk integrity above remain mandatory for every request.
+            forwarded = dict(response.headers)
+            forwarded.pop("content-length", None)
+            forwarded["X-Accel-Redirect"] = f"/_catalog_files/{digest[:2]}/{digest}"
+            return Response(headers=forwarded)
+        return response
 
 
 def install(router, runtime):
     settings = runtime.application_settings.get("board_game_agent", {})
-    files = CatalogFiles(settings.get("public_file_roots", {}).get("library_store"))
+    files = CatalogFiles(
+        settings.get("public_file_roots", {}).get("library_store"),
+        nginx_files=settings.get("nginx_library_files", False),
+    )
 
     @router.get(PREFIX + "/revision")
     def revision(response: Response):

@@ -151,6 +151,8 @@ class ApplicationRegistry:
             definition = self.get(key)
             if not isinstance(value, dict) or set(value) - {
                 "browser_origin",
+                "browser_allowed_origins",
+                "nginx_library_files",
                 "file_roots",
                 "public_file_roots",
             }:
@@ -180,8 +182,33 @@ class ApplicationRegistry:
             result[key] = {**value, "file_roots": dict(roots)}
             if value.get("browser_origin") is not None:
                 result[key]["browser_origin"] = browser_origin(value["browser_origin"])
+            if "browser_allowed_origins" in value:
+                allowed = value["browser_allowed_origins"]
+                if (
+                    not isinstance(allowed, list)
+                    or len(allowed) > 16
+                    or allowed
+                    and not value.get("browser_origin")
+                ):
+                    raise ValueError(
+                        "Browser previews require a primary origin and at most sixteen origins"
+                    )
+                result[key]["browser_allowed_origins"] = sorted(
+                    {browser_origin(site) for site in allowed} - {result[key].get("browser_origin")}
+                )
+            if "nginx_library_files" in value and (
+                not isinstance(value["nginx_library_files"], bool)
+                or value["nginx_library_files"]
+                and "library_store" not in definition.public_file_areas
+            ):
+                raise ValueError(
+                    "Nginx files require a declared library store and a boolean setting"
+                )
         origins = [
-            value["browser_origin"] for value in result.values() if value.get("browser_origin")
+            site
+            for value in result.values()
+            if value.get("browser_origin")
+            for site in (value["browser_origin"], *value.get("browser_allowed_origins", ()))
         ]
         if len(origins) != len(set(origins)):
             raise ValueError("Each application requires its own browser origin")

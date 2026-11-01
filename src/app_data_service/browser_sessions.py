@@ -20,17 +20,20 @@ from .sessions import REFRESH_AUDIENCE, REFRESH_LIFETIME
 
 
 class BrowserSessions:
-    def __init__(self, sessions, public_origin, app_id):
+    def __init__(self, sessions, public_origin, app_id, *, allowed_origins=()):
         self.sessions = sessions
         self.app_id = application_id(app_id)
         self.cookie = "__Host-app-session-" + app_id
         self.origin = browser_origin(public_origin)
+        if not isinstance(allowed_origins, (list, tuple)) or len(allowed_origins) > 16:
+            raise ValueError("Configure at most sixteen explicit browser origins")
+        self.origins = frozenset((self.origin, *(browser_origin(v) for v in allowed_origins)))
         # Domain-separated secret derived from the existing session encryption key.
         # A stable HMAC key across API restarts/replicas, never published.
         self.csrf_key = sessions.browser_csrf_key
 
     def origin_check(self, request: Request):
-        if request.headers.get("origin") != self.origin:
+        if request.headers.get("origin") not in self.origins:
             raise HTTPException(403, "origin_rejected")
         if request.headers.get("content-type", "").split(";")[0] != "application/json":
             raise HTTPException(415, "json_required")

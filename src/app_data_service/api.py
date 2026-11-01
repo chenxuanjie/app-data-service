@@ -91,13 +91,17 @@ def create_app(
             config = settings.get(definition.id, {})
             if config.get("browser_origin"):
                 runtime.browsers[definition.id] = BrowserSessions(
-                    sessions, config["browser_origin"], definition.id
+                    sessions,
+                    config["browser_origin"],
+                    definition.id,
+                    allowed_origins=config.get("browser_allowed_origins", ()),
                 )
             if definition.file_areas:
                 runtime.files[definition.id] = AccountFiles(
                     sessions, config.get("file_roots", {}), definition.id
                 )
-        if len({b.origin for b in runtime.browsers.values()}) != len(runtime.browsers):
+        origins = [origin for b in runtime.browsers.values() for origin in b.origins]
+        if len(set(origins)) != len(origins):
             raise ValueError("Each application requires its own browser origin")
     runtime.platform_router = build_router(runtime)
     app.include_router(runtime.platform_router)

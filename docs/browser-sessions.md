@@ -18,6 +18,8 @@
 当前每个应用在 APP_DATA_APPLICATIONS 中配置 browser_origin 才启用浏览器会话，见 [当前契约](application-scope.md)。网页和 /api/ 同源，网关转发时移除 /api 前缀，
 保留 Origin、Content-Type、X-CSRF-Token、Cookie、Set-Cookie；不得缓存认证响应。
 FastAPI 不信任任意 X-Forwarded-* 或请求提供的 NAS 上游。
+
+2026-11-01 增加可选 `browser_allowed_origins`：同一应用可显式配置最多 16 个附加来源，供本地 HTTPS 预览等独立入口使用；必须同时配置正式 `browser_origin`。来源经过完整 origin 校验、去重，并禁止与其他应用的正式/附加来源重叠。无通配符、无客户端传入上游，不重写浏览器 Origin；Cookie 的 Secure/HttpOnly/SameSite 和 CSRF 要求不降低。它只扩展浏览器会话来源检查，不自动修改 CORS。配置变更无需新增数据库迁移，但使用此字段的运行镜像必须包含本轮支持。
 0.5.0 起 FastAPI 为纯 API 服务，网页与 `/api/` 的同源转发由独立前端网关提供；后端不再内置静态页面或移除 `/api` 前缀的中间件。
 
 Cookie 名为 __Host-app-session-<app_id>，CSRF 绑定应用。Cookie 使用 Secure/HttpOnly/SameSite=Strict/Path=/，不设置 Domain；生产必须 HTTPS。
@@ -29,4 +31,4 @@ bootstrap 与登录有有界频率/并发限制，所有数据库事务、锁和
 重新登录遇到离线退出遗留 Cookie 时，先结束旧会话再创建新会话，不恢复旧账号作为新账号。
 
 不做旧浏览器 WebCrypto 凭据兼容，更新后需重新登录一次；客户端缓存和待上传队列保留。
-文件与更新 API 已在[第二阶段](account-files.md)加入；board-game-agent 接入仍未修改。
+文件与更新 API 见[第二阶段](account-files.md)；桌游采用 `/v1/apps/board_game_agent/` 契约。Web 与原生共用业务服务，Cookie 与原生令牌的传输方式按平台区分。

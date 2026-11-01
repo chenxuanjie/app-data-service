@@ -117,3 +117,29 @@ API 运行角色对资料公开表只有 SELECT，并经应用 RLS 过滤草稿�
 NAS 已完成本轮资料结构及首次导入；不能把数据库已完成部署等同于新客户端安装包已交付。Flutter 客户端源码已切换到新 `/catalog`，详见桌游工程的 `docs/catalog-client.md`；设备安装验收与 Web 同源部署另行完成。服务端旧 `/library` 只读入口已从源码移除，历史资料不会因此被删除。
 
 `tests/test_board_catalog.py` 在随机命名的真实 PostgreSQL 测试库验证导入保留、草稿隐藏、原子发布、幂等、冲突、局部合并、RLS、文件版本/撤下、PDF Range 和失败保留。实际 NAS 导入、产物构建和设备验收必须另外记录，不以测试库结果代替。
+
+<a id="web-file-delivery"></a>
+## Web 可选文件交付
+
+2026-11-01 增加桌游应用配置 `nginx_library_files`，默认 false。开启且内容请求带 `X-BGA-File-Delivery: nginx` 时，API 仍先经过当前 SQL/RLS 可见性和文件完整性检查，再返回 `X-Accel-Redirect: /_catalog_files/<前两位>/<sha256>`。这个头是交付提示，不是认证或权限；普通请求继续返回 FileResponse，原生客户端无需改动。元数据、资源身份及发布流程不变，无新数据库迁移。
+
+Web Nginx 必须使用配套源码，且只读挂载 API 的现有内容卷到 `/data/board-library`；内部 location 禁止浏览器直接访问，保留 API 的摘要 ETag、MIME、Content-Disposition、安全头及 Range/HEAD/If-Range 行为。API 检查之后才允许读取内容对象，不公开整个 NAS 目录、不直接读取旧 JSON。禁止将旧 `board-game-lib` 挂载冒充新内容存储。
+
+在本机使用现有私有配置生成新文件（示例路径按实际文件替换，不把秘密写入命令）：
+
+```powershell
+.venv/Scripts/python.exe tools/configure_board_web.py `
+  --api-compose C:/private/api-compose.yaml `
+  --web-compose ../../board-game-agent/packaging/docker/docker-compose.ghcr.yml `
+  --api-output C:/private/api-compose-web.yaml `
+  --web-output C:/private/board-web-compose.yaml `
+  --browser-origin https://cznas.pp.ua:8084 `
+  --preview-origin https://localhost:8084 `
+  --preview-origin https://127.0.0.1:8084
+```
+
+此命令默认保留 API 文件交付。要开启 Nginx 文件直送，再增加 `--library-volume <实际已存在的Docker卷名>`。实际卷名来自 NAS API 容器 `/data/board-library` 对应的 Mounts.Name，可能带项目名前缀；不能只填逻辑名 `board_library_data`。Web Compose 将该卷标为 external，只读复用，不创建/复制资料，不修改原 API 卷声明或镜像。要求 API 使用显式 volume 挂载该路径；未知或冲突布局拒绝生成，不能静默替换。
+
+工具保留原配置中的其他应用、数据库、密钥、API 镜像与数据卷；只更新桌游浏览器来源与本次交付配置，输出拒绝覆盖输入/已有文件。开启直送时 Web 使用 API 配置的数字 UID:GID 及附加组（UID:GID 缺省为当前 API 镜像的 `10001:10001`），不修改文件所有者或 NAS ACL，不允许 root 读取身份。输出仍含原有秘密，保持私有，不提交 Git。
+
+本轮需要更新 API 与 Web 镜像及相应配置；PostgreSQL、PowerSync、BYOK 镜像和同步规则无需更新。已有导入资料不重新导入；未启用直送时没有新增资料挂载。源代码和本机测试完成不代表 NAS 两份配置已部署。

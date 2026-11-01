@@ -54,6 +54,57 @@ def browser_login(client):
     return result.json()
 
 
+def test_explicit_preview_origin_keeps_cookie_csrf_and_account_lifecycle(authenticated, db):
+    _, _, authority, manager = authenticated
+    app = create_app(
+        db.runtime,
+        authority,
+        "https://web.test/api/powersync",
+        sessions=manager,
+        application_settings={
+            "zheri": {
+                "browser_origin": "https://web.test",
+                "browser_allowed_origins": ["https://localhost:8084"],
+            }
+        },
+    )
+    with TestClient(
+        app,
+        base_url="https://localhost:8084",
+        headers={"Origin": "https://localhost:8084", "X-App-ID": "zheri"},
+    ) as client:
+        assert "Secure" in bootstrap(client).headers["set-cookie"]
+        account = browser_login(client)
+        assert "refresh_token" not in account
+        assert client.post("/v1/auth/browser/restore", json={}).status_code == 200
+        client.headers["Origin"] = "https://evil.test"
+        assert client.post("/v1/auth/browser/restore", json={}).status_code == 403
+        client.headers["Origin"] = "https://localhost:8084"
+        client.headers.pop("X-CSRF-Token")
+        assert client.post("/v1/auth/browser/restore", json={}).status_code == 403
+
+
+def test_preview_origins_cannot_overlap_other_applications(authenticated, db):
+    _, _, authority, manager = authenticated
+    with pytest.raises(ValueError, match="own browser origin"):
+        create_app(
+            db.runtime,
+            authority,
+            "https://web.test/api/powersync",
+            sessions=manager,
+            application_settings={
+                "zheri": {
+                    "browser_origin": "https://zheri.test",
+                    "browser_allowed_origins": ["https://localhost:8084"],
+                },
+                "board_game_agent": {
+                    "browser_origin": "https://games.test",
+                    "browser_allowed_origins": ["https://localhost:8084"],
+                },
+            },
+        )
+
+
 def test_cookie_restore_survives_client_and_api_restart_without_js_refresh_token(browser):
     client, _, manager, app = browser
     response = bootstrap(client)

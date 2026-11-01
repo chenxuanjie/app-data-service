@@ -137,14 +137,17 @@ def catalog(db):
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
     )
 
-    def client(store):
+    def client(store, **settings):
         return TestClient(
             create_app(
                 db.runtime,
                 TokenAuthority(key, "http://testserver"),
                 "http://testserver/powersync",
                 application_settings={
-                    "board_game_agent": {"public_file_roots": {"library_store": str(store)}}
+                    "board_game_agent": {
+                        "public_file_roots": {"library_store": str(store)},
+                        **settings,
+                    }
                 },
             )
         )
@@ -447,6 +450,43 @@ def test_conflicting_drafts_never_overwrite_a_newer_release(db, catalog, tmp_pat
     fresh = import_library(db.migrator, plan_library(source), store)
     assert fresh["batch_id"] != b["batch_id"]
     assert publish_library(db.migrator, fresh["batch_id"], store)["revision"] > version
+
+
+def test_nginx_delivery_is_opt_in_and_still_checks_sql_visibility_and_file_integrity(
+    db, catalog, tmp_path
+):
+    source, store = inputs(tmp_path)
+    batch = import_library(db.migrator, plan_library(source), store)
+    uri = BASE + "/resources/first-pdf/content"
+    hint = {"X-BGA-File-Delivery": "nginx"}
+    with catalog(store, nginx_library_files=True) as client:
+        assert client.get(uri, headers=hint).status_code == 404
+        publish_library(db.migrator, batch["batch_id"], store)
+        direct = client.get(uri)
+        assert direct.content == b"%PDF-fixture" and "x-accel-redirect" not in direct.headers
+        accelerated = client.get(uri, headers=hint)
+        digest = direct.headers["etag"].strip('"')
+        assert accelerated.status_code == 200 and accelerated.content == b""
+        assert accelerated.headers["x-accel-redirect"] == f"/_catalog_files/{digest[:2]}/{digest}"
+        assert accelerated.headers["content-type"] == "application/pdf"
+        assert accelerated.headers["etag"] == direct.headers["etag"]
+        assert client.head(uri, headers=hint).headers["etag"] == direct.headers["etag"]
+        assert (
+            client.get(uri, headers=hint | {"If-None-Match": direct.headers["etag"]}).status_code
+            == 304
+        )
+        assert (
+            client.get(BASE + "/resources/first-disabled/content", headers=hint).status_code == 404
+        )
+        with catalog(store) as ordinary:
+            response = ordinary.get(uri, headers=hint)
+            assert (
+                response.content == b"%PDF-fixture" and "x-accel-redirect" not in response.headers
+            )
+        (store / "blobs" / digest[:2] / digest).write_bytes(b"tampered")
+        assert client.get(uri, headers=hint).status_code == 503
+    with catalog(store) as client:
+        assert client.get(uri, headers=hint).status_code == 503
 
 
 def test_missing_file_metadata_is_kept_without_exposing_a_broken_download(db, catalog, tmp_path):
