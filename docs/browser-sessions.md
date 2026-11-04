@@ -19,6 +19,8 @@
 保留 Origin、Content-Type、X-CSRF-Token、Cookie、Set-Cookie；不得缓存认证响应。
 FastAPI 不信任任意 X-Forwarded-* 或请求提供的 NAS 上游。
 
+代理后的客户端地址和认证限额见 [认证限流与可信代理链](trusted-proxies.md)。API 使用显式 `APP_DATA_TRUSTED_PROXIES` 名单；登录与 bootstrap 按应用及客户端隔离，登录另有账号维度限额，保留实例级 DSM 并发保护。
+
 2026-11-01 增加可选 `browser_allowed_origins`：同一应用可显式配置最多 16 个附加来源，供本地 HTTPS 预览等独立入口使用；必须同时配置正式 `browser_origin`。来源经过完整 origin 校验、去重，并禁止与其他应用的正式/附加来源重叠。无通配符、无客户端传入上游，不重写浏览器 Origin；Cookie 的 Secure/HttpOnly/SameSite 和 CSRF 要求不降低。它只扩展浏览器会话来源检查，不自动修改 CORS。配置变更无需新增数据库迁移，但使用此字段的运行镜像必须包含本轮支持。
 0.5.0 起 FastAPI 为纯 API 服务，网页与 `/api/` 的同源转发由独立前端网关提供；后端不再内置静态页面或移除 `/api` 前缀的中间件。
 

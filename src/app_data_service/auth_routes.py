@@ -3,13 +3,13 @@
 import asyncio
 import logging
 import time
-from collections import OrderedDict
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from .auth_limits import AuthQuota
 from .browser_sessions import BrowserSessions
 from .dependencies import Application
 from .dsm import DsmFailure
@@ -35,22 +35,12 @@ def build_router(runtime, *, router=None, prefix="/v1/apps/{application_id}"):
     router = APIRouter() if router is None else router
     sessions, authority, browsers = runtime.sessions, runtime.authority, runtime.browsers
     if runtime.auth_quota is None:
-        runtime.auth_quota = OrderedDict()
+        runtime.auth_quota = AuthQuota()
         runtime.auth_capacity = asyncio.Semaphore(4)
     quota, capacity = runtime.auth_quota, runtime.auth_capacity
 
     async def authenticate(body: Login, request: Request, app_id: str):
-        key = request.client.host if request.client else "unknown"
-        now = time.monotonic()
-        start, count = quota.get(key, (now, 0))
-        if now - start >= 60:
-            start, count = now, 0
-        quota[key] = (start, count + 1)
-        quota.move_to_end(key)
-        if len(quota) > 1024:
-            quota.popitem(last=False)
-        if count >= 10:
-            raise HTTPException(429, "rate_limited")
+        quota.login(app_id, request.client.host if request.client else "unknown", body.account)
         try:
             await asyncio.wait_for(capacity.acquire(), timeout=1)
         except TimeoutError as error:
@@ -96,18 +86,8 @@ def build_router(runtime, *, router=None, prefix="/v1/apps/{application_id}"):
 
         @router.post(prefix + "/auth/browser/bootstrap")
         async def browser_bootstrap(request: Request, browser: Browser):
-            # Same quota as authentication; no uncontrolled anonymous session allocation.
-            key = "browser:" + (request.client.host if request.client else "unknown")
-            now = time.monotonic()
-            start, count = quota.get(key, (now, 0))
-            if now - start >= 60:
-                start, count = now, 0
-            quota[key] = (start, count + 1)
-            quota.move_to_end(key)
-            if len(quota) > 1024:
-                quota.popitem(last=False)
-            if count >= 30:
-                raise HTTPException(429, "rate_limited")
+            browser.origin_check(request)
+            quota.bootstrap(browser.app_id, request.client.host if request.client else "unknown")
             return await asyncio.to_thread(browser.bootstrap, request)
 
         @router.post(prefix + "/auth/browser/login")

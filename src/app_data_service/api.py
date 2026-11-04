@@ -20,6 +20,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeout
 from .applications import ApplicationRegistry
 from .auth import TokenAuthority
 from .browser_sessions import BrowserSessions
+from .client_address import TrustedClientAddress, trusted_proxy_networks
 from .config import database_url, make_engine
 from .dsm import DsmFailure, DsmProvider
 from .files import AccountFiles
@@ -53,7 +54,9 @@ def create_app(
     allowed_origins: list[str] | None = None,
     applications: ApplicationRegistry | None = None,
     application_settings: dict | None = None,
+    trusted_proxies: tuple[str, ...] = (),
 ) -> FastAPI:
+    trusted_proxy_networks(trusted_proxies)
     endpoint = urlsplit(sync_endpoint)
     if (
         endpoint.scheme not in {"https", "http"}
@@ -84,6 +87,7 @@ def create_app(
     )
     runtime.application_settings = settings
     app.state.runtime, app.state.applications, app.state.engine = runtime, applications, engine
+    app.add_middleware(TrustedClientAddress, proxies=trusted_proxies)
     app.add_middleware(BoundedBody)
     if allowed_origins:
         app.add_middleware(
@@ -201,4 +205,9 @@ def from_environment() -> FastAPI:
             for v in os.environ.get("APP_DATA_ALLOWED_ORIGINS", "").split(",")
             if v.strip()
         ],
+        trusted_proxies=tuple(
+            value.strip()
+            for value in os.environ.get("APP_DATA_TRUSTED_PROXIES", "").split(",")
+            if value.strip()
+        ),
     )

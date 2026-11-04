@@ -8,10 +8,20 @@ from pathlib import Path
 
 import yaml
 
+from app_data_service.client_address import trusted_proxy_networks
 from app_data_service.origins import browser_origin
 
 
-def configure(api, web, *, origin, previews=(), library_volume=None):
+def configure(
+    api,
+    web,
+    *,
+    origin,
+    previews=(),
+    library_volume=None,
+    trusted_api_proxies=None,
+    trusted_web_proxies=None,
+):
     api, web = copy.deepcopy(api), copy.deepcopy(web)
     environment = api["services"]["api"]["environment"]
     applications = json.loads(environment.get("APP_DATA_APPLICATIONS", "{}"))
@@ -31,6 +41,14 @@ def configure(api, web, *, origin, previews=(), library_volume=None):
     settings["browser_allowed_origins"] = allowed
     settings["nginx_library_files"] = library_volume is not None
     frontend = web["services"]["board-game-agent"]
+    if trusted_api_proxies is not None:
+        environment["APP_DATA_TRUSTED_PROXIES"] = ",".join(
+            str(network) for network in trusted_proxy_networks(trusted_api_proxies)
+        )
+    if trusted_web_proxies is not None:
+        frontend.setdefault("environment", {})["BGA_TRUSTED_PROXIES"] = ",".join(
+            str(network) for network in trusted_proxy_networks(trusted_web_proxies)
+        )
     frontend.setdefault("environment", {})["LIBRARY_ACCELERATION"] = "1" if library_volume else "0"
     web["services"]["web-ai"]["environment"]["WEB_PUBLIC_ORIGIN"] = origin
     if library_volume:
@@ -92,6 +110,18 @@ def main():
         "--library-volume",
         help="Actual existing Docker volume name; enables read-only Nginx delivery",
     )
+    parser.add_argument(
+        "--trusted-api-proxy",
+        action="append",
+        default=None,
+        help="Verified API-side proxy IP/CIDR; omitted preserves existing trust",
+    )
+    parser.add_argument(
+        "--trusted-web-proxy",
+        action="append",
+        default=None,
+        help="Verified Web-side proxy IP/CIDR; omitted preserves existing trust",
+    )
     args = parser.parse_args()
     outputs = [args.api_output.resolve(), args.web_output.resolve()]
     inputs = {args.api_compose.resolve(), args.web_compose.resolve()}
@@ -103,6 +133,8 @@ def main():
         origin=args.browser_origin,
         previews=args.preview_origin,
         library_volume=args.library_volume,
+        trusted_api_proxies=args.trusted_api_proxy,
+        trusted_web_proxies=args.trusted_web_proxy,
     )
     for path, document in zip(outputs, (api, web), strict=True):
         path.parent.mkdir(parents=True, exist_ok=True)

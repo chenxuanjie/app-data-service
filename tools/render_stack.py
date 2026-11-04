@@ -14,6 +14,7 @@ from render_sync_config import render as render_sync_config
 from render_synology import compose
 from sqlalchemy.engine import URL
 
+from app_data_service.client_address import trusted_proxy_networks
 from app_data_service.dsm import DsmProvider
 from app_data_service.modules.registry import installed_applications
 
@@ -47,7 +48,9 @@ def stack(
     application_settings=None,
     public_mounts=None,
     board_library=False,
+    trusted_proxies=(),
 ):
+    trusted = trusted_proxy_networks(trusted_proxies)
     parsed = urlsplit(origin)
     if (
         parsed.scheme not in {"https", "http"}
@@ -104,6 +107,9 @@ REVOKE ALL ON DATABASE powersync_storage FROM PUBLIC;
         "APP_DATA_SYNC_ENDPOINT": origin.rstrip("/") + "/powersync/",
         "APP_DATA_POWERSYNC_UPSTREAM": "http://powersync:8080",
         "APP_DATA_ALLOWED_ORIGINS": allowed_origins,
+        # Keep Uvicorn proxy rewriting disabled: the API resolves only client
+        # addresses, across this explicit list, without trusting scheme/host.
+        "APP_DATA_TRUSTED_PROXIES": ",".join(str(network) for network in trusted),
     }
     registry = installed_applications()
     settings = registry.validate_settings(application_settings or {})
@@ -264,6 +270,7 @@ def main():
     parser.add_argument("--api-image", default="app-data-service:0.5.0-test")
     parser.add_argument("--port", type=int, default=18280)
     parser.add_argument("--allowed-origins", default="")
+    parser.add_argument("--trusted-proxy", action="append", default=[])
     parser.add_argument(
         "--board-library", action="store_true", help="Mount published library storage"
     )
@@ -284,6 +291,7 @@ def main():
         api_image=args.api_image,
         port=args.port,
         allowed_origins=args.allowed_origins,
+        trusted_proxies=args.trusted_proxy,
         dsm_identity_origin=args.dsm_identity_origin,
         dsm_lan_ip=args.dsm_lan_ip,
         application_settings=json.loads(args.applications.read_text(encoding="utf-8"))
