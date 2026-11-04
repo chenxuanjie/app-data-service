@@ -1,10 +1,31 @@
+import tomllib
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from test_sessions import authenticated as authenticated_fixture
 
+from app_data_service import api as api_module
 from app_data_service.api import create_app
 
 COOKIE = "__Host-app-session-zheri"
+
+
+def test_openapi_reports_the_project_release_version(web):
+    project = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
+    response = web.get("/openapi.json")
+    assert response.status_code == 200
+    assert response.json()["info"]["version"] == project["version"]
+
+
+def test_packaged_runtime_reads_installed_version_without_source_manifest(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_module, "__file__", str(tmp_path / "src/app_data_service/api.py"))
+    monkeypatch.setattr(
+        api_module, "version", lambda name: "6.2.1" if name == "app-data-service" else ""
+    )
+    assert api_module.application_version() == "6.2.1"
 
 
 @pytest.fixture(name="authenticated")

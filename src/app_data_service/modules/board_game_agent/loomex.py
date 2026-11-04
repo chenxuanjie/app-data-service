@@ -21,6 +21,7 @@ from app_data_service.dependencies import Actor
 PREFIX = "/v1/apps/board_game_agent/ai/loomex/v1"
 DEFAULT_MODEL = "gpt-6-sol"
 ALLOWED_OPERATIONS = {"responses", "responses/compact", "chat/completions"}
+DISCONNECT_CLEANUP_SECONDS = 1.0
 
 
 def install(router):
@@ -131,9 +132,33 @@ def install(router):
             finally:
                 capacity.release()
 
+        stop_watching = asyncio.Event()
+
         async def disconnected():
-            while not await request.is_disconnected():
-                await asyncio.sleep(0.2)
+            # is_disconnected() uses an AnyIO cancellation scope. An asyncio
+            # cancel arriving inside that probe may be consumed by the scope,
+            # so the monitor needs an independent, cooperative exit condition.
+            while not stop_watching.is_set():
+                if await request.is_disconnected():
+                    return
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(stop_watching.wait(), timeout=0.2)
+
+        async def stop_watcher():
+            stop_watching.set()
+            try:
+                # wait_for(task) can itself wait indefinitely for cancellation
+                # acknowledgement. asyncio.wait bounds only this join instead.
+                await asyncio.wait({watcher}, timeout=DISCONNECT_CLEANUP_SECONDS)
+            finally:
+                if not watcher.done():
+                    watcher.cancel()
+
+                def observe(task):
+                    with suppress(asyncio.CancelledError, Exception):
+                        task.result()
+
+                watcher.add_done_callback(observe)
 
         headers = {"Authorization": "Bearer " + key, "Accept-Encoding": "identity"}
         identifier = request.headers.get("idempotency-key")
@@ -149,7 +174,7 @@ def install(router):
             await close()
             raise HTTPException(422, "ai_payload_invalid") from None
         pending = asyncio.create_task(client.send(outgoing, stream=True))
-        watcher = asyncio.create_task(disconnected())
+        watcher = asyncio.create_task(disconnected(), name="loomex-header-disconnect")
         try:
             done, _ = await asyncio.wait(
                 {pending, watcher}, timeout=45, return_when=asyncio.FIRST_COMPLETED
@@ -189,9 +214,13 @@ def install(router):
             await close()
             raise
         finally:
-            watcher.cancel()
-            with suppress(asyncio.CancelledError):
-                await watcher
+            try:
+                await stop_watcher()
+            except BaseException:
+                # Cancellation during the header-to-stream handoff must not
+                # orphan the successful response or retain its capacity slot.
+                await close()
+                raise
 
         async def content():
             size = 0

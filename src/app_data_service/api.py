@@ -2,7 +2,9 @@
 
 import base64
 import os
+import tomllib
 from contextlib import asynccontextmanager
+from importlib.metadata import version
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -27,6 +29,17 @@ from .platform_routes import build_router
 from .runtime import ServiceRuntime
 from .sessions import SessionManager
 from .sync_gateway import install as install_sync_gateway
+
+
+def application_version():
+    # Source checkouts and the Docker image contain this exact project manifest.
+    # Prefer it to stale editable-install metadata in a development environment.
+    manifest = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    if manifest.is_file():
+        project = tomllib.loads(manifest.read_text(encoding="utf-8"))["project"]
+        if project["name"] == "app-data-service":
+            return project["version"]
+    return version("app-data-service")
 
 
 def create_app(
@@ -63,7 +76,7 @@ def create_app(
         if dispose_engine:
             engine.dispose()
 
-    app = FastAPI(title="App Data Service", version="0.5.0", lifespan=lifespan)
+    app = FastAPI(title="App Data Service", version=application_version(), lifespan=lifespan)
     # SDK endpointUri uses URI.resolve: a mount path must end in '/' or it
     # resolves sync/stream beside the mount instead of underneath it.
     runtime = ServiceRuntime(
