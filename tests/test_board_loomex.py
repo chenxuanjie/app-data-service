@@ -5,6 +5,7 @@ dependencies, including the receive/cancellation behavior missing in ASGI mocks.
 """
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -16,7 +17,7 @@ from app_data_service.modules.board_game_agent import loomex
 
 CLIENT = httpx.AsyncClient
 PATH = loomex.PREFIX + "/responses"
-BODY = {"model": loomex.DEFAULT_MODEL, "input": "fixture"}
+BODY = {"model": "gpt-6-sol", "input": "fixture"}
 
 
 class Provider:
@@ -26,10 +27,26 @@ class Provider:
         self.clients = []
         self.streams = []
         self.started = 0
+        self.requests = []
         self.gate = asyncio.Event()
 
     async def request(self, request):
         self.started += 1
+        self.requests.append(request)
+        if request.method == "GET":
+            if self.mode == "invalid-list":
+                return httpx.Response(200, json={"data": "invalid"})
+            if self.mode == "rejected":
+                return httpx.Response(429, json={"error": "private upstream message"})
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"id": "gpt-6.1-sol", "owned_by": "openai", "extra": "private field"},
+                        {"id": "codex-auto-review"},
+                    ]
+                },
+            )
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.mode == "headers":
@@ -193,5 +210,54 @@ def test_header_handoff_has_a_bounded_monitor_join(monkeypatch):
                         )
                     )
                 )
+
+    asyncio.run(scenario())
+
+
+def test_discovers_upstream_models_and_forwards_new_model_ids(monkeypatch):
+    async def scenario():
+        monkeypatch.setenv("APP_DATA_BOARD_LOOMEX_MODELS", "stale-model")
+        provider = Provider()
+        async with serving(application(monkeypatch, provider)) as origin:
+            async with CLIENT(base_url=origin, timeout=5) as client:
+                response = await client.get(loomex.PREFIX + "/models")
+                assert response.status_code == 200
+                assert response.headers["cache-control"] == "no-store"
+                assert response.json() == {
+                    "object": "list",
+                    "data": [
+                        {"id": "gpt-6.1-sol", "object": "model", "owned_by": "openai"},
+                        {"id": "codex-auto-review", "object": "model", "owned_by": "loomex"},
+                    ],
+                }
+                assert str(provider.requests[0].url) == "https://provider.invalid/v1/models"
+                assert (
+                    provider.requests[0].headers["authorization"] == "Bearer fixture-not-a-real-key"
+                )
+                response = await client.post(PATH, json={**BODY, "model": "gpt-6.1-sol"})
+                assert response.status_code == 200
+                assert json.loads(provider.requests[1].content)["model"] == "gpt-6.1-sol"
+                invalid = await client.post(PATH, json={**BODY, "model": []})
+                assert invalid.status_code == 422
+                assert len(provider.requests) == 2
+                await until(provider.all_closed)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("mode,status", [("invalid-list", 502), ("rejected", 429)])
+def test_model_discovery_errors_release_capacity(monkeypatch, mode, status):
+    async def scenario():
+        provider = Provider()
+        provider.mode = mode
+        async with serving(application(monkeypatch, provider)) as origin:
+            async with CLIENT(base_url=origin, timeout=5) as client:
+                for _ in range(9):
+                    response = await client.get(loomex.PREFIX + "/models")
+                    assert response.status_code == status
+                    assert "private upstream message" not in response.text
+                provider.mode = "success"
+                assert (await client.get(loomex.PREFIX + "/models")).status_code == 200
+                await until(provider.all_closed)
 
     asyncio.run(scenario())

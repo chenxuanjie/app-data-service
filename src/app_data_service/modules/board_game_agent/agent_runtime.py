@@ -23,11 +23,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from typing_extensions import TypedDict
 
 from .favorite_rankings import RankingLocale, RankingsUnavailable, read_favorite_rankings
-from .loomex import DEFAULT_MODEL, loomex_base_url
+from .loomex import loomex_base_url
 
 logger = logging.getLogger(__name__)
 
 OPEN_RANKINGS = "open_rankings"
+DEFAULT_MODEL = "gpt-6-sol"
 run_stop = ContextVar[asyncio.Event | None]("board_agent_run_stop", default=None)
 RUN_TIMEOUT_SECONDS = 90
 RUN_STEP_LIMIT = 12

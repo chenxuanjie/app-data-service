@@ -48,9 +48,9 @@ Web 浏览器仍需要自己的 `/api/` 转发及 SQLite Worker 静态资源/响
 
 ## Loomex 模型转发（2026-10-27，未验收源码）
 
-桌游模块新增 `/ai/loomex/v1/models`（GET）和 `/ai/loomex/v1/{operation}`（POST），后者仅接受 `chat/completions`、`responses`、`responses/compact`。使用既有 Actor/应用会话验证，无需新增表、迁移或改认证核心。上游默认 `https://www.loomex.lol/v1`，默认允许模型 `gpt-6-sol`，推理 low、服务等级 default；Key 只从 API 容器的 `APP_DATA_BOARD_LOOMEX_API_KEY` 读取。
+桌游模块新增 `/ai/loomex/v1/models`（GET）和 `/ai/loomex/v1/{operation}`（POST），后者仅接受 `chat/completions`、`responses`、`responses/compact`。使用既有 Actor/应用会话验证，无需新增表、迁移或改认证核心。上游默认 `https://www.loomex.lol/v1`，模型列表来自上游 `/models`，推理 low、服务等级 default；Key 只从 API 容器的 `APP_DATA_BOARD_LOOMEX_API_KEY` 读取。
 
-可用 `APP_DATA_BOARD_LOOMEX_BASE_URL` 和逗号分隔的 `APP_DATA_BOARD_LOOMEX_MODELS` 显式配置部署；模型集合必须包含默认模型。客户端不能覆盖上游/Key，不开放 provider 存储响应读取、跨账号 previous_response_id 或 background。客户端幂等键与账号绑定，流取消/错误释放连接，并限制容量、时长和大小。实现复用已锁定 HTTPX/Starlette，不新增依赖；上游错误正文不直接下发。
+用 `APP_DATA_BOARD_LOOMEX_BASE_URL` 配置上游地址。旧的 `APP_DATA_BOARD_LOOMEX_MODELS` 配置可移除，模型是否可调用由 Loomex 上游决定。列表仅返回模型 ID 和归属，并与生成请求共用容量限制。客户端不能覆盖上游/Key，不开放 provider 存储响应读取、跨账号 previous_response_id 或 background。客户端幂等键与账号绑定，流取消/错误释放连接，并限制容量、时长和大小。实现复用已锁定 HTTPX/Starlette，不新增依赖；上游错误正文不直接下发。
 
 用户提供的凭据仅写入 Git 忽略的 `.local/loomex.private.json` 及既有私有构建输入 `.local/api-only-input.yaml`。未修改旧交付 Compose、数据库凭据、NAS 或真实数据。后续需更新 API 镜像、容器环境及客户端；无须重建 PostgreSQL/PowerSync 镜像。**本次用户明确要求不测试、不构建、不编译；没有执行 pytest、lint 检查、上游请求或容器运行，不能声明模型调用通过。**
 
