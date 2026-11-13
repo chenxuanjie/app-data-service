@@ -33,10 +33,12 @@ jobs:
       - name: Prepare locked Linux Python wheels
         run: |
           mkdir -p .docker-wheels
+          base_image="$(awk 'NR == 1 && $1 == "FROM" { print $2 }' Dockerfile)"
+          test -n "$base_image"
           docker run --rm --user "$(id -u):$(id -g)" \
             --env HOME=/tmp \
             --volume "$PWD:/workspace" --workdir /workspace \
-            python:3.14.2-slim-bookworm \
+            "$base_image" \
             python -m pip download --disable-pip-version-check \
               --only-binary=:all: --no-deps \
               --timeout 120 --retries 5 \
@@ -63,7 +65,8 @@ jobs:
           context: .
           file: Dockerfile
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
+          outputs: type=image,push=${{ github.event_name != 'pull_request' }},rewrite-timestamp=true
+          build-args: SOURCE_DATE_EPOCH=0
           tags: ${{ steps.image.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}

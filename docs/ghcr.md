@@ -14,9 +14,13 @@ PR 只构建，不登录或推送 GHCR。构建不附带完整业务测试。
 不需要单独保存 GHCR 发布密码。首次运行前确认仓库 Settings → Actions → General
 已启用 Actions，并允许本工作流使用的 GitHub/Docker 官方 actions。
 
-现有 Dockerfile 保留离线 wheel 安装模式。工作流在 Python 3.14.2 Linux 容器中按
-`requirements-runtime.lock` 下载 wheel，再用 Buildx 构建当前检出的路径上下文；
-依赖不升级，运行镜像不包含测试、开发配置或本地 Compose。BuildKit 缓存存于 Actions。
+Dockerfile 固定 Python 3.14.2 基础镜像的 digest。工作流使用同一基础镜像按
+`requirements-runtime.lock` 下载 wheel，再离线构建。镜像分层独立存放运行依赖、应用包、
+版本及 Alembic 配置、数据库迁移。构建时生成的文件时间戳固定，减少独立构建之间的层摘要变化。
+BuildKit 缓存存于 Actions，NAS 拉取时按层摘要复用本机已有的数据。
+
+首次切换到此布局会拉取新的依赖层。后续只改 Python 源码时，通常只需下载应用包层及镜像元数据。
+升级 Python 基础镜像、依赖锁或修改迁移时，相应层会更新。基础镜像安全更新通过审查后显式更新 digest。
 
 ## 镜像标签
 
