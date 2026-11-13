@@ -15,6 +15,11 @@ dependencies = [
   "uvicorn==0.54.0",
   "PyJWT[crypto]==2.15.1",
   "httpx==0.28.1",
+  "langchain==1.5.0",
+  "langgraph==1.2.21",
+  "langchain-openai==1.7.4",
+  "langsmith==0.14.17",
+  "openai==3.50.0",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +27,7 @@ dev = ["pytest==9.1.1", "ruff==0.17.1", "PyYAML==6.0.3", "httpx==0.28.1"]
 
 [project.scripts]
 app-data = "app_data_service.cli:main"
+board-agent = "app_data_service.modules.board_game_agent.agent_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

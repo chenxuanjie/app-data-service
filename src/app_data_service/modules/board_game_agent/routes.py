@@ -62,7 +62,7 @@ def build_router(runtime):
         response.headers["Cache-Control"] = "no-store"
         actor = identity(request, credentials, app_id).user_id if credentials else None
         with user_transaction(runtime.engine, actor or "public-reader", app_id=app_id) as c:
-            result = c.scalar(sa.text("SELECT board_game_agent.public_counts()"))
+            result = business.public_counts(c)
             result["own_favorites"] = []
             result["own_votes"] = []
             if actor:

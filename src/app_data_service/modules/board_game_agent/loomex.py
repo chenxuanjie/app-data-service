@@ -24,9 +24,7 @@ ALLOWED_OPERATIONS = {"responses", "responses/compact", "chat/completions"}
 DISCONNECT_CLEANUP_SECONDS = 1.0
 
 
-def install(router):
-    # Settings belong to this application module, not authentication or another app.
-    key = os.environ.get("APP_DATA_BOARD_LOOMEX_API_KEY", "").strip()
+def loomex_base_url():
     base = os.environ.get("APP_DATA_BOARD_LOOMEX_BASE_URL", "https://www.loomex.lol/v1").rstrip("/")
     parsed = urlsplit(base)
     if (
@@ -38,6 +36,13 @@ def install(router):
         or parsed.fragment
     ):
         raise ValueError("Loomex requires a fixed HTTPS upstream without credentials")
+    return base
+
+
+def install(router):
+    # Settings belong to this application module, not authentication or another app.
+    key = os.environ.get("APP_DATA_BOARD_LOOMEX_API_KEY", "").strip()
+    base = loomex_base_url()
     models = tuple(
         dict.fromkeys(
             filter(

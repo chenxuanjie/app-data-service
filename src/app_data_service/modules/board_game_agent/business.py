@@ -21,6 +21,10 @@ def re_slug(value):
     return isinstance(value, str) and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", value)
 
 
+def public_counts(connection):
+    return connection.scalar(sa.text("SELECT board_game_agent.public_counts()"))
+
+
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00]+$")

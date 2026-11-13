@@ -1,6 +1,7 @@
 """Catalog acceptance uses isolated real PostgreSQL plus owned temporary source/store files."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app_data_service.api import create_app
 from app_data_service.auth import TokenAuthority
+from app_data_service.models import Dataset
 from app_data_service.modules.board_game_agent import catalog_import
 from app_data_service.modules.board_game_agent import catalog_models as m
 from app_data_service.modules.board_game_agent.catalog_import import plan_library
@@ -23,6 +25,8 @@ from app_data_service.modules.board_game_agent.catalog_service import (
     import_library,
     publish_library,
 )
+from app_data_service.modules.board_game_agent.favorite_rankings import read_favorite_rankings
+from app_data_service.modules.board_game_agent.models import favorites
 from app_data_service.store import user_transaction
 
 BASE = "/v1/apps/board_game_agent/catalog"
@@ -361,6 +365,62 @@ def test_draft_hidden_then_atomic_publication_and_rls(db, catalog, tmp_path):
         user_transaction(db.runtime, "alice", app_id="board_game_agent") as c,
     ):
         c.execute(sa.select(m.sources))
+
+
+def test_agent_favorite_rankings_use_public_catalog_and_counts(db, catalog, tmp_path):
+    source, store = inputs(tmp_path, ("rank-zero", "rank-b", "rank-a"))
+    draft = import_library(db.migrator, plan_library(source), store)
+    assert read_favorite_rankings(db.runtime, 3, "en")["items"] == []
+    released = publish_library(db.migrator, draft["batch_id"], store)
+
+    now = datetime.now(UTC)
+    with db.migrator.begin() as c:
+        c.execute(
+            sa.insert(Dataset),
+            [
+                {
+                    "id": "rank-alice",
+                    "app_id": "board_game_agent",
+                    "owner_id": "alice",
+                    "name": "A",
+                },
+                {"id": "rank-bob", "app_id": "board_game_agent", "owner_id": "bob", "name": "B"},
+            ],
+        )
+        c.execute(
+            favorites.insert(),
+            [
+                {
+                    "dataset_id": dataset,
+                    "id": slug,
+                    "game_slug": slug,
+                    "created_at": now,
+                    "deleted_at": deleted,
+                }
+                for dataset, slug, deleted in (
+                    ("rank-alice", "rank-a", None),
+                    ("rank-bob", "rank-b", None),
+                    ("rank-bob", "rank-zero", now),
+                    ("rank-alice", "unpublished", None),
+                )
+            ],
+        )
+    try:
+        result = read_favorite_rankings(db.runtime, 3, "zhHans")
+        assert result["catalog_revision"] == released["revision"]
+        assert result["items"] == [
+            {"slug": "rank-a", "title": "桌游rank-a", "rank": 1, "favorite_count": 1},
+            {"slug": "rank-b", "title": "桌游rank-b", "rank": 1, "favorite_count": 1},
+            {"slug": "rank-zero", "title": "桌游rank-zero", "rank": 3, "favorite_count": 0},
+        ]
+        assert [row["title"] for row in read_favorite_rankings(db.runtime, 1, "en")["items"]] == [
+            "rank-a"
+        ]
+    finally:
+        with db.migrator.begin() as c:
+            datasets = ("rank-alice", "rank-bob")
+            c.execute(favorites.delete().where(favorites.c.dataset_id.in_(datasets)))
+            c.execute(sa.delete(Dataset).where(Dataset.id.in_(datasets)))
 
 
 def test_retry_idempotency_and_file_integrity(db, catalog, tmp_path):
