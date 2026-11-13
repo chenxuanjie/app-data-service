@@ -44,6 +44,13 @@ def test_one_user_has_two_private_spaces_and_independent_logout(authenticated):
         assert authority.claims(account["access_token"])["app_id"] == account["app_id"]
         result = client.get(path(account, "/datasets"), headers=headers(account)).json()["datasets"]
         assert [r["id"] for r in result] == [account["dataset_id"]]
+        refreshed = client.post(
+            path(account, "/auth/refresh"), json={"refresh_token": account["refresh_token"]}
+        )
+        assert refreshed.status_code == 200
+        assert refreshed.json()["dataset_id"] == account["dataset_id"]
+        assert refreshed.json()["dataset_kind"] == account["dataset_kind"] == "personal"
+        assert refreshed.json()["display_name"] == account["display_name"] == "alice"
     assert (
         client.post(
             path(board, "/auth/logout"),

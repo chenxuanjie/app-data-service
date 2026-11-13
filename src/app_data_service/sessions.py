@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -83,6 +84,11 @@ class SessionManager:
         }
 
     def session(self, actor: str, session_id, app_id: str, *, refresh: str | None = None) -> dict:
+        with self._active_session(actor, session_id, app_id, refresh=refresh) as (_, row):
+            return dict(row)
+
+    @contextmanager
+    def _active_session(self, actor: str, session_id, app_id: str, *, refresh: str | None = None):
         try:
             identifier = UUID(str(session_id))
         except ValueError as error:
@@ -102,15 +108,33 @@ class SessionManager:
                 .mappings()
                 .one_or_none()
             )
-        if (
-            not row
-            or refresh is not None
-            and not hmac.compare_digest(
-                row["refresh_hash"], hashlib.sha256(refresh.encode()).hexdigest()
+            if (
+                not row
+                or refresh is not None
+                and not hmac.compare_digest(
+                    row["refresh_hash"], hashlib.sha256(refresh.encode()).hexdigest()
+                )
+            ):
+                raise jwt.InvalidTokenError("Session unavailable")
+            yield c, row
+
+    def _refresh_identity(self, actor: str, session_id, app_id: str, token: str) -> dict:
+        with self._active_session(actor, session_id, app_id, refresh=token) as (c, _):
+            profile = (
+                c.execute(
+                    sa.text("""
+                    SELECT u.display_name, d.id AS dataset_id, d.kind AS dataset_kind
+                    FROM core.users AS u
+                    LEFT JOIN core.personal_spaces AS p ON p.user_id = u.id AND p.app_id = :app
+                    LEFT JOIN core.datasets AS d ON d.id = p.dataset_id
+                    WHERE u.id = :actor
+                """),
+                    {"actor": actor, "app": app_id},
+                )
+                .mappings()
+                .one()
             )
-        ):
-            raise jwt.InvalidTokenError("Session unavailable")
-        return dict(row)
+            return dict(profile)
 
     def verify_access(self, token: str, app_id: str) -> str:
         claims = self.authority.claims(token, app_id=app_id)
@@ -143,11 +167,12 @@ class SessionManager:
         if verified != actor:
             raise DsmFailure("session_rejected", 401)
         # Recheck after network I/O: a concurrent logout must not revive a session.
-        await asyncio.to_thread(self.session, actor, row["id"], app_id, refresh=token)
+        identity = await asyncio.to_thread(self._refresh_identity, actor, row["id"], app_id, token)
         return {
             "access_token": self.access(actor, row["id"], app_id),
             "user_id": actor,
             "app_id": app_id,
+            **identity,
         }
 
     def revoke(self, actor, session_id, app_id):

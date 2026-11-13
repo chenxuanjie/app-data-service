@@ -331,13 +331,14 @@ def test_account_only_module_does_not_create_a_personal_dataset(third_app, db, i
             assert client.get(route("status_only", "/datasets"), headers=auth(account)).json() == {
                 "datasets": []
             }
-            assert (
-                client.post(
-                    route("status_only", "/auth/refresh"),
-                    json={"refresh_token": account["refresh_token"]},
-                ).status_code
-                == 200
+            refreshed = client.post(
+                route("status_only", "/auth/refresh"),
+                json={"refresh_token": account["refresh_token"]},
             )
+            assert refreshed.status_code == 200
+            assert refreshed.json()["display_name"] == account["display_name"]
+            assert refreshed.json()["dataset_id"] is None
+            assert refreshed.json()["dataset_kind"] is None
     finally:
         assert db.migrator.url.database.startswith("app_data_test_")
         with db.migrator.begin() as c:

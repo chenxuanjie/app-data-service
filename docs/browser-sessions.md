@@ -12,7 +12,7 @@
 | GET /v1/client-config | 公开应用服务规范地址与浏览器会话启用状态，不含 NAS 配置或秘密 |
 | POST /v1/auth/browser/bootstrap | 校验来源后创建/恢复匿名 Cookie，并返回内存 CSRF token |
 | POST /v1/auth/browser/login | CSRF 校验，DSM 验证后绑定服务器会话 |
-| POST /v1/auth/browser/restore | 恢复 Cookie 会话、核验 DSM，返回短期访问令牌和用户标识 |
+| POST /v1/auth/browser/restore | 恢复 Cookie 会话、核验 DSM，返回短期访问令牌和当前应用的账号资料 |
 | POST /v1/auth/browser/logout | 先撤销浏览器会话，再撤销对应应用会话与 DSM 会话 |
 
 当前每个应用在 APP_DATA_APPLICATIONS 中配置 browser_origin 才启用浏览器会话，见 [当前契约](application-scope.md)。网页和 /api/ 同源，网关转发时移除 /api 前缀，

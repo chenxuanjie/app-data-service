@@ -187,6 +187,9 @@ def test_existing_primary_space_login_keeps_dataset_identity(authenticated, db):
     client.headers["Authorization"] = "Bearer " + first["access_token"]
     second = login(client)
     assert second["dataset_id"] == dataset and second["dataset_kind"] == "personal"
+    refreshed = client.post("/v1/auth/refresh", json={"refresh_token": first["refresh_token"]})
+    assert refreshed.status_code == 200
+    assert refreshed.json()["dataset_id"] == dataset
     assert client.get("/v1/datasets").json() == {
         "datasets": [{"id": dataset, "name": "个人账本", "kind": "personal"}]
     }

@@ -129,8 +129,11 @@ def test_cookie_restore_survives_client_and_api_restart_without_js_refresh_token
         bootstrap(reopened)
         restored = reopened.post("/v1/auth/browser/restore", json={})
         assert restored.status_code == 200
-        assert restored.json()["user_id"] == account["user_id"]
-        assert set(restored.json()) == {"user_id", "access_token", "app_id"}
+        identity = restored.json()
+        assert identity.pop("access_token")
+        assert identity == {key: value for key, value in account.items() if key != "access_token"}
+        assert identity["display_name"] == "alice"
+        assert identity["dataset_kind"] == "personal"
         assert restored.headers["cache-control"] == "no-store"
 
 
