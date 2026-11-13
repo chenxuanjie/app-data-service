@@ -1,6 +1,7 @@
 """Authenticated AG-UI transport for the board-game Graph."""
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -27,6 +28,7 @@ from app_data_service.sessions import REFRESH_AUDIENCE, REFRESH_LIFETIME
 
 from .agent_checkpoint import PostgresThreads
 from .agent_runtime import (
+    CLIENT_TOOL_NAMES,
     OPEN_RANKINGS,
     RUN_STEP_LIMIT,
     RUN_TIMEOUT_SECONDS,
@@ -77,6 +79,8 @@ class Thread:
     stop: asyncio.Event = field(default_factory=asyncio.Event)
     pending: str | None = None
     paused_run: str | None = None
+    pending_tool: str | None = None
+    client_tool_names: list[str] = field(default_factory=list)
     expires: float = 0
     closed: bool = False
 
@@ -89,6 +93,8 @@ class Thread:
             "active": self.active,
             "pending": self.pending,
             "paused_run": self.paused_run,
+            "pending_tool": self.pending_tool,
+            "client_tool_names": self.client_tool_names,
             "expires": self.expires,
             "closed": self.closed,
         }
@@ -103,22 +109,12 @@ def _validate(body):
         raise HTTPException(422, "invalid_agent_id")
     if body.state or body.context or body.forwarded_props or body.parent_run_id:
         raise HTTPException(422, "unsupported_agent_input")
-    if any(tool.name != OPEN_RANKINGS for tool in body.tools or ()) or len(body.tools or ()) > 1:
+    names = [tool.name for tool in body.tools or ()]
+    if len(names) != len(set(names)) or not CLIENT_TOOL_NAMES.issuperset(names):
         raise HTTPException(422, "unsupported_client_tool")
     if body.resume:
         if len(body.resume) != 1 or body.messages:
             raise HTTPException(422, "invalid_agent_resume")
-        entry = body.resume[0]
-        value = entry.payload
-        if entry.status == "cancelled" and value is None:
-            return
-        if (
-            entry.status != "resolved"
-            or not isinstance(value, dict)
-            or set(value) != {"status"}
-            or value["status"] not in NAVIGATION_STATUSES
-        ):
-            raise HTTPException(422, "invalid_client_tool_result")
         return
     if len(body.messages) != 1 or not isinstance(body.messages[0], UserMessage):
         raise HTTPException(422, "one_user_message_required")
@@ -129,6 +125,32 @@ def _validate(body):
         or not 1 <= len(message.content.strip()) <= 4000
     ):
         raise HTTPException(422, "invalid_user_message")
+
+
+def _validate_result(entry, name):
+    value = entry.payload
+    if entry.status == "cancelled" and value is None:
+        return
+    if entry.status == "resolved" and isinstance(value, dict):
+        if name in (None, OPEN_RANKINGS):
+            if set(value) == {"status"} and value["status"] in NAVIGATION_STATUSES:
+                return
+        elif (
+            value.keys() <= {"status", "code", "data"}
+            and value.get("status") in ("succeeded", "failed")
+            and isinstance(code := value.get("code"), str)
+            and ID.fullmatch(code)
+            and ("data" not in value or isinstance(value["data"], dict))
+        ):
+            try:
+                if (
+                    len(json.dumps(value, allow_nan=False, ensure_ascii=False).encode())
+                    <= 96 * 1024
+                ):
+                    return
+            except (ValueError, RecursionError):
+                pass
+    raise HTTPException(422, "invalid_client_tool_result")
 
 
 class AgentStream(StreamingResponse):
@@ -253,6 +275,7 @@ class AgentService:
 
     async def _close_thread(self, thread_id, thread):
         thread.active = thread.pending = thread.paused_run = None
+        thread.pending_tool = None
         thread.closed = True
         thread.touched = time()
         await self._save(thread_id, thread)
@@ -284,6 +307,7 @@ class AgentService:
             if now >= thread.expires:
                 await self._close_thread(body.thread_id, thread)
                 raise HTTPException(410, "agent_interrupt_expired")
+            _validate_result(body.resume[0], thread.pending_tool)
         elif thread and thread.pending:
             if now < thread.expires:
                 raise HTTPException(409, "agent_interrupt_pending")
@@ -304,20 +328,22 @@ class AgentService:
         thread.runs.add(body.run_id)
         if body.messages:
             thread.messages.add(body.messages[0].id)
+            thread.client_tool_names = [tool.name for tool in body.tools or ()]
         await self._save(body.thread_id, thread)
         return thread
 
     def _response(self, body, thread):
-        client_tools = bool(body.tools or body.resume)
-        # Tool descriptions and client state never reach the model. The
-        # advertised tool name opts in to the single server-owned schema.
+        client_tools = thread.client_tool_names
+        if body.resume and thread.pending_tool is None and not client_tools:
+            client_tools = [OPEN_RANKINGS]  # Pending checkpoint from before multi-tool support.
+        # The client advertises names; only server-owned definitions reach the model.
         body = body.model_copy(update={"tools": None})
         adapter = BoardGraphAdapter(
             name="board-game-agent",
             graph=self.graph,
             config={
                 "recursion_limit": RUN_STEP_LIMIT,
-                "configurable": {OPEN_RANKINGS: client_tools},
+                "configurable": {"client_tool_names": client_tools},
             },
             emit_interrupt_outcome=True,
             enable_legacy_on_interrupt_event=False,
@@ -358,8 +384,12 @@ class AgentService:
                                 return
                             thread.pending = None
                             thread.paused_run = None
+                            thread.pending_tool = None
                             if outcome is not None and outcome.type == "interrupt":
-                                thread.pending = outcome.interrupts[0].id
+                                paused = outcome.interrupts[0]
+                                thread.pending = paused.id
+                                raw = (paused.metadata or {}).get("langgraph", {}).get("raw", {})
+                                thread.pending_tool = raw.get("tool", OPEN_RANKINGS)
                                 thread.paused_run = body.run_id
                                 thread.expires = time() + INTERRUPT_TTL
                             thread.touched = time()

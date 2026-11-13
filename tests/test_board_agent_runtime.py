@@ -8,15 +8,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from app_data_service.modules.board_game_agent import agent_cli, agent_runtime
 
 
-def model_stream(output=None, *, error=None):
+def model_stream(output=None, *, error=None, tool="get_favorite_rankings", call_id="call_1"):
     if error:
         events = [{"type": "error", "code": "test_error", "message": error}]
     elif isinstance(output, dict):
         item = {
             "type": "function_call",
-            "name": "get_favorite_rankings",
+            "name": tool,
             "id": "fc_1",
-            "call_id": "call_1",
+            "call_id": call_id,
             "arguments": "",
         }
         arguments = json.dumps(output)

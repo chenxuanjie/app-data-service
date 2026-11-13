@@ -3,8 +3,9 @@
 本地联调入口为 `POST /v1/apps/board_game_agent/ai/agent`。浏览器同源入口加 `/api` 前缀。依赖锁定 `ag-ui-langgraph 0.0.47` 和 `ag-ui-protocol 1.0.0`，沿用 FastAPI `0.148.0`。适配器依赖 MIT 许可，版本升级时应复验中断、流关闭和事件转换。 [AG-UI Python 适配器](https://pypi.org/project/ag-ui-langgraph/0.0.47/)
 
 - 原生端使用现有桌游应用访问令牌。Web 可以使用现有浏览器流程签发的访问令牌，也可以发送同源 Cookie 和 `X-CSRF-Token`。带 Bearer 的 `GET /health` 检查 Agent 是否已初始化，路径相对于上述入口。
-- 每次新回合只提交一条纯文本用户消息，带稳定的消息 ID、新的 `runId` 和同一个 `threadId`。SSE 输出文本、工具和运行终止事件。客户端可用 `tools` 广告 `open_rankings`，服务器使用自己的工具定义。
-- 仅收到 `RUN_FINISHED.outcome.type == "interrupt"` 且中断原因为 `client_tool` 时才触发导航。用新 `runId` 和相同 `threadId` 重新 POST，`messages: []`，`resume: [{"interruptId":"…","status":"resolved","payload":{"status":"opened"}}]`。结果也可为 `already_open` 或 `unavailable`。`status: "cancelled"` 可用于将工具取消结果交给模型。
+- 每次新回合只提交一条纯文本用户消息，带稳定的消息 ID、新的 `runId` 和同一个 `threadId`。SSE 输出文本、工具和运行终止事件。客户端通过 `tools` 声明支持的工具名。服务端只绑定白名单内且已声明的工具，并使用服务端的参数定义。
+- 客户端只在 `RUN_FINISHED.outcome.type == "interrupt"`、原因为 `client_tool` 且与本次工具调用 ID 对应时执行。通用工具的名称和已校验参数来自 `metadata.langgraph.raw`。客户端校验本地权限及参数后，用新 `runId` 和相同 `threadId` 重新 POST，`messages: []`，`resume: [{"interruptId":"…","status":"resolved","payload":{"status":"succeeded","code":"data_read","data":{}}}]`。失败使用 `status: "failed"` 和失败码。旧排行榜工具继续接受 `{"status":"opened"}` 等回执。
+- 服务端将每轮已声明的工具和待恢复工具存在线程状态中。恢复请求不能扩大能力范围，回执必须与待恢复中断匹配。模型可在恢复后调用下一项工具。
 - 停止 Run 使用 `POST /{threadId}/runs/{runId}/cancel`，路径相对于 Agent 入口。断开活动 SSE 或显式停止会取消模型请求并关闭当前线程。迟到的恢复请求会被拒绝。HTTP 410 后可用新线程重试。
 - 内存线程供本地单进程联调使用。每线程只允许一个活动 Run，最多 32 次请求，空闲 30 分钟后可回收。暂停结果在 5 分钟内有效。PostgreSQL Checkpoint 在阶段 5 接入。
 

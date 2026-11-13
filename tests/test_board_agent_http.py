@@ -182,6 +182,62 @@ def test_agui_stream_tool_and_resume(monkeypatch):
     )
 
 
+def test_multiple_client_tools_resume_with_server_owned_definitions(monkeypatch):
+    requests = []
+    responses = iter(
+        [
+            model_stream({"players": 4}, tool="list_favorites", call_id="find"),
+            model_stream(
+                {"page": "game_detail", "game_id": "cabo"}, tool="navigate_to_page", call_id="open"
+            ),
+            model_stream(["Opened Cabo."]),
+        ]
+    )
+
+    def provider(request):
+        requests.append(json.loads(request.content))
+        return next(responses)
+
+    async def scenario():
+        async with endpoint(monkeypatch, provider) as (client, _):
+            payload = body("find")
+            payload["tools"] = [
+                {"name": name, "description": "ignored client description", "parameters": {}}
+                for name in ("list_favorites", "navigate_to_page")
+            ]
+            first = events(await client.post(PATH, json=payload))[-1]
+            item = first["outcome"]["interrupts"][0]
+            raw = item["metadata"]["langgraph"]["raw"]
+            assert raw["tool"] == "list_favorites"
+            assert raw["arguments"]["players"] == 4
+            malformed = resume("bad-receipt", item["id"])
+            assert (await client.post(PATH, json=malformed)).status_code == 422
+            result = resume("after-favorites", item["id"])
+            result["resume"][0]["payload"] = {
+                "status": "succeeded",
+                "code": "data_read",
+                "data": {"game_id": "cabo"},
+            }
+            second = events(await client.post(PATH, json=result))[-1]
+            item = second["outcome"]["interrupts"][0]
+            assert item["metadata"]["langgraph"]["raw"]["tool"] == "navigate_to_page"
+            result = resume("after-navigation", item["id"])
+            result["resume"][0]["payload"] = {"status": "succeeded", "code": "opened"}
+            final = events(await client.post(PATH, json=result))
+            assert final[-1]["type"] == "RUN_FINISHED"
+            assert "Opened Cabo." in str(final)
+
+    asyncio.run(scenario())
+    for request in requests:
+        assert {tool["name"] for tool in request["tools"]} == {
+            "get_favorite_rankings",
+            "list_favorites",
+            "navigate_to_page",
+        }
+        assert "ignored client description" not in str(request["tools"])
+    assert "data_read" in str(requests[1]["input"])
+
+
 def test_postgres_checkpoint_survives_restart_and_isolates_threads(db, monkeypatch):
     database = "agent_test_" + uuid4().hex
 
