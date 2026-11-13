@@ -38,10 +38,12 @@ def identity(request: Request, credentials: Credential, app_id: Application) -> 
 Actor = Annotated[RequestScope, Depends(identity)]
 
 
-def application_router(identifier: str) -> APIRouter:
+def application_router(identifier: str, *, lifespan=None) -> APIRouter:
     """A module route has a fixed owner, even without an application header."""
 
     class ApplicationRoute(APIRoute):
         application_id = identifier
 
-    return APIRouter(route_class=ApplicationRoute, dependencies=[Depends(request_application)])
+    return APIRouter(
+        route_class=ApplicationRoute, dependencies=[Depends(request_application)], lifespan=lifespan
+    )

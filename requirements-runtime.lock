@@ -1,3 +1,6 @@
+ag-ui-a2ui-toolkit==0.0.6
+ag-ui-langgraph==0.0.47
+ag-ui-protocol==1.0.0
 alembic==1.20.0
 annotated-doc==0.0.5
 annotated-types==0.8.0
