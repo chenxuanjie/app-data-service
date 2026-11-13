@@ -45,6 +45,7 @@ pycparser==3.11
 pydantic_core==2.50.1
 pydantic==2.14.1
 PyJWT==2.15.1
+PyYAML==6.0.3
 regex==2026.11.9
 requests-toolbelt==1.0.0
 requests==2.34.2
