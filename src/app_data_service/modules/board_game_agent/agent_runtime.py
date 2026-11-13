@@ -14,7 +14,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import interrupt
 from openai import OpenAIError
 from pydantic import Field
@@ -121,7 +121,7 @@ def loomex_model(client: httpx.AsyncClient) -> ChatOpenAI:
 
 
 def build_agent(
-    engine: Engine, model: BaseChatModel, *, checkpointer: InMemorySaver, client_tools=False
+    engine: Engine, model: BaseChatModel, *, checkpointer: BaseCheckpointSaver, client_tools=False
 ):
     @tool
     def get_favorite_rankings(

@@ -28,6 +28,7 @@ langchain-openai==1.7.4
 langchain-protocol==0.0.21
 langchain==1.5.0
 langgraph-checkpoint==4.3.1
+langgraph-checkpoint-postgres==3.2.0
 langgraph-prebuilt==1.1.1
 langgraph-sdk==0.4.14
 langgraph==1.2.21
@@ -41,6 +42,7 @@ ormsgpack==1.13.1
 packaging==26.3
 pluggy==1.7.0
 psycopg-binary==3.3.6
+psycopg-pool==3.3.3
 psycopg==3.3.6
 pycparser==3.11
 pydantic_core==2.50.1

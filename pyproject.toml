@@ -19,6 +19,8 @@ dependencies = [
   "ag-ui-protocol==1.0.0",
   "langchain==1.5.0",
   "langgraph==1.2.21",
+  "langgraph-checkpoint-postgres==3.2.0",
+  "psycopg-pool==3.3.3",
   "langchain-openai==1.7.4",
   "langsmith==0.14.17",
   "openai==3.50.0",

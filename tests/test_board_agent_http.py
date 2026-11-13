@@ -1,12 +1,16 @@
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from http_helpers import serving, until
+from psycopg import Connection, sql
+from sqlalchemy.engine import make_url
 from test_board_agent_runtime import model_stream
 from test_sessions import authenticated as authenticated_fixture
 
@@ -18,6 +22,7 @@ from app_data_service.dependencies import (
     request_application,
 )
 from app_data_service.modules.board_game_agent import agent_http, agent_runtime
+from app_data_service.modules.board_game_agent.agent_checkpoint import setup_checkpoint_database
 
 PATH = "/v1/apps/board_game_agent/ai/agent"
 
@@ -174,6 +179,84 @@ def test_agui_stream_tool_and_resume(monkeypatch):
     assert any(
         item["type"] == "function_call_output" and "opened" in item["output"]
         for item in requests[3]["input"]
+    )
+
+
+def test_postgres_checkpoint_survives_restart_and_isolates_threads(db, monkeypatch):
+    database = "agent_test_" + uuid4().hex
+
+    def dsn(role):
+        return (
+            make_url(db.urls[role])
+            .set(drivername="postgresql", database=database if role != "admin" else None)
+            .render_as_string(hide_password=False)
+        )
+
+    monkeypatch.setenv("APP_DATA_BOARD_AGENT_CHECKPOINT_DSN", dsn("runtime"))
+    payloads = []
+    responses = iter(
+        [
+            model_stream(["Remember Cabo."]),
+            navigation_stream(),
+            model_stream(["Opened."]),
+            model_stream(["Cabo."]),
+        ]
+    )
+
+    def provider(request):
+        payloads.append(json.loads(request.content))
+        return next(responses)
+
+    async def scenario():
+        setup_checkpoint_database(dsn("migrator"), "app_runtime")
+        async with endpoint(monkeypatch, provider) as (client, service):
+            assert (await client.get(PATH + "/health")).json()["checkpoint"] == "postgres"
+            assert (
+                events(await client.post(PATH, json=body("remember")))[-1]["type"] == "RUN_FINISHED"
+            )
+            outcome = events(await client.post(PATH, json=body("pause", navigation=True)))[-1]
+            pending = outcome["outcome"]["interrupts"][0]["id"]
+            assert service.threads["thread"].pending == pending
+
+        async with endpoint(monkeypatch, provider) as (client, service):
+            result = resume("resume", pending)
+            assert (
+                await client.post(PATH, json=result, headers={"authorization": "bob"})
+            ).status_code == 404
+            assert events(await client.post(PATH, json=result))[-1]["type"] == "RUN_FINISHED"
+            assert (await client.post(PATH, json=result)).status_code == 409
+            assert (
+                events(await client.post(PATH, json=body("follow-up")))[-1]["type"]
+                == "RUN_FINISHED"
+            )
+            assert (
+                await client.delete(PATH + "/thread", headers={"authorization": "bob"})
+            ).status_code == 404
+            assert (await client.delete(PATH + "/thread")).status_code == 204
+            assert not await service.saver.aget_tuple({"configurable": {"thread_id": "thread"}})
+            service.threads["thread"].touched = 0
+            await service._save("thread", service.threads["thread"])
+
+        async with endpoint(monkeypatch, provider) as (client, service):
+            assert "thread" not in service.threads
+            assert not await service.saver.aget_tuple({"configurable": {"thread_id": "thread"}})
+            assert (await client.post(PATH, json=resume("late", pending))).status_code == 409
+
+    with Connection.connect(dsn("admin"), dbname="postgres", autocommit=True) as connection:
+        name = sql.Identifier(database)
+        connection.execute(sql.SQL("CREATE DATABASE {} OWNER app_migrator").format(name))
+        try:
+            connection.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(name))
+            connection.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO app_runtime").format(name))
+            asyncio.run(
+                scenario(), loop_factory=asyncio.SelectorEventLoop if os.name == "nt" else None
+            )
+        finally:
+            connection.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(name))
+    assert "Remember Cabo." in json.dumps(payloads[-1]["input"])
+    assert any(
+        item["type"] == "function_call_output" and "opened" in item["output"]
+        for item in payloads[2]["input"]
     )
 
 

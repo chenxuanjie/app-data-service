@@ -1,11 +1,28 @@
 """Explicit local conversion and maintenance publication; no NAS/network discovery."""
 
+import os
 from pathlib import Path
+
+import psycopg
 
 from app_data_service.config import make_engine
 
+from .agent_checkpoint import setup_checkpoint_database
 from .catalog_import import DEFAULT_SQL_FILE_MAX, plan_library
 from .catalog_service import import_library, publish_library
+
+
+def _setup_checkpoint(args, _urls):
+    dsn = os.environ.get("APP_DATA_BOARD_AGENT_CHECKPOINT_MIGRATION_DSN")
+    if not dsn:
+        raise ValueError("APP_DATA_BOARD_AGENT_CHECKPOINT_MIGRATION_DSN is required")
+    try:
+        setup_checkpoint_database(dsn, args.runtime_role)
+    except psycopg.Error as error:
+        raise ValueError(
+            f"Agent checkpoint setup failed (SQLSTATE {error.sqlstate or 'unknown'})"
+        ) from None
+    return {"checkpoint": "postgres", "initialized": True}
 
 
 def _import(args, urls):
@@ -28,6 +45,12 @@ def _publish(args, urls):
 
 
 def register_commands(commands):
+    checkpoint = commands.add_parser(
+        "board-init-agent-checkpoint", help="Initialize the dedicated Agent checkpoint database"
+    )
+    checkpoint.add_argument("--runtime-role", required=True)
+    checkpoint.set_defaults(needs_database=False, handler=_setup_checkpoint)
+
     plan = commands.add_parser(
         "board-plan-library", help="Preview legacy conversion without writes"
     )

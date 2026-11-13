@@ -4,9 +4,9 @@ import asyncio
 import logging
 import os
 import re
-from contextlib import aclosing, asynccontextmanager
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager
 from dataclasses import dataclass, field
-from time import monotonic
+from time import monotonic, time
 from typing import Annotated
 
 import anyio
@@ -18,11 +18,14 @@ from ag_ui_langgraph import LangGraphAgent
 from fastapi import Depends, HTTPException, Request, Response
 from langgraph.checkpoint.memory import InMemorySaver
 from langsmith import tracing_context
+from psycopg import Error as PostgresError
+from psycopg_pool import PoolTimeout
 from starlette.responses import StreamingResponse
 
 from app_data_service.dependencies import Actor, Application, Credential, RequestScope, identity
 from app_data_service.sessions import REFRESH_AUDIENCE, REFRESH_LIFETIME
 
+from .agent_checkpoint import PostgresThreads
 from .agent_runtime import (
     OPEN_RANKINGS,
     RUN_STEP_LIMIT,
@@ -76,6 +79,23 @@ class Thread:
     paused_run: str | None = None
     expires: float = 0
     closed: bool = False
+
+    def snapshot(self):
+        return {
+            "owner": self.owner,
+            "touched": self.touched,
+            "runs": sorted(self.runs),
+            "messages": sorted(self.messages),
+            "active": self.active,
+            "pending": self.pending,
+            "paused_run": self.paused_run,
+            "expires": self.expires,
+            "closed": self.closed,
+        }
+
+    @classmethod
+    def restore(cls, state):
+        return cls(**{**state, "runs": set(state["runs"]), "messages": set(state["messages"])})
 
 
 def _validate(body):
@@ -179,40 +199,76 @@ class AgentService:
         self.saver = InMemorySaver()
         self.graph = None
         self.threads = {}
+        self.storage = None
+        self.lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(self, _app):
-        async with httpx.AsyncClient(
-            trust_env=False,
-            follow_redirects=False,
-            timeout=httpx.Timeout(connect=8, read=45, write=15, pool=5),
-        ) as client:
+        async with AsyncExitStack() as resources:
             if os.environ.get("APP_DATA_BOARD_LOOMEX_API_KEY", "").strip():
-                self.graph = build_agent(
-                    self.engine, loomex_model(client), checkpointer=self.saver, client_tools=True
-                )
+                dsn = os.environ.get("APP_DATA_BOARD_AGENT_CHECKPOINT_DSN")
+                try:
+                    if dsn:
+                        self.storage = await resources.enter_async_context(
+                            PostgresThreads.open(dsn)
+                        )
+                        self.saver = self.storage.saver
+                        self.threads = {
+                            key: Thread.restore(value)
+                            for key, value in (await self.storage.load()).items()
+                        }
+                        # A live SSE connection is process-owned. Any run
+                        # without a committed terminal outcome is abandoned.
+                        for key, thread in tuple(self.threads.items()):
+                            if thread.active:
+                                await self._close_thread(key, thread)
+                        await self._prune(time())
+                    client = await resources.enter_async_context(
+                        httpx.AsyncClient(
+                            trust_env=False,
+                            follow_redirects=False,
+                            timeout=httpx.Timeout(connect=8, read=45, write=15, pool=5),
+                        )
+                    )
+                    self.graph = build_agent(
+                        self.engine,
+                        loomex_model(client),
+                        checkpointer=self.saver,
+                        client_tools=True,
+                    )
+                except (ValueError, PostgresError, PoolTimeout, OSError) as error:
+                    logger.error("board_agent startup_error=%s", type(error).__name__)
+                    await resources.aclose()
             try:
                 yield
             finally:
                 self.graph = None
-                for thread_id in tuple(self.threads):
-                    self._forget(thread_id)
+                self.storage = None
+                self.threads.clear()
+                self.saver = InMemorySaver()
 
-    def _forget(self, thread_id):
-        self.saver.delete_thread(thread_id)
-        self.threads.pop(thread_id, None)
+    async def _save(self, thread_id, thread):
+        if self.storage is not None:
+            await self.storage.save(thread_id, thread.snapshot())
 
-    def _close_thread(self, thread_id, thread):
-        self.saver.delete_thread(thread_id)
+    async def _close_thread(self, thread_id, thread):
         thread.active = thread.pending = thread.paused_run = None
         thread.closed = True
-        thread.touched = monotonic()
+        thread.touched = time()
+        await self._save(thread_id, thread)
+        await self.saver.adelete_thread(thread_id)
 
-    def _admit(self, body, owner):
-        now = monotonic()
+    async def _prune(self, now):
         for key, thread in tuple(self.threads.items()):
             if thread.active is None and now - thread.touched >= THREAD_TTL:
-                self._forget(key)
+                await self.saver.adelete_thread(key)
+                if self.storage is not None:
+                    await self.storage.delete(key)
+                self.threads.pop(key)
+
+    async def _admit(self, body, owner):
+        now = time()
+        await self._prune(now)
         thread = self.threads.get(body.thread_id)
         if thread and thread.owner != owner:
             raise HTTPException(404, "agent_thread_not_found")
@@ -226,12 +282,12 @@ class AgentService:
             if not thread or thread.pending != body.resume[0].interrupt_id:
                 raise HTTPException(409, "agent_interrupt_not_pending")
             if now >= thread.expires:
-                self._close_thread(body.thread_id, thread)
+                await self._close_thread(body.thread_id, thread)
                 raise HTTPException(410, "agent_interrupt_expired")
         elif thread and thread.pending:
             if now < thread.expires:
                 raise HTTPException(409, "agent_interrupt_pending")
-            self._close_thread(body.thread_id, thread)
+            await self._close_thread(body.thread_id, thread)
             raise HTTPException(410, "agent_interrupt_expired")
         if thread and len(thread.runs) >= MAX_REQUESTS_PER_THREAD:
             raise HTTPException(409, "agent_thread_limit")
@@ -248,6 +304,7 @@ class AgentService:
         thread.runs.add(body.run_id)
         if body.messages:
             thread.messages.add(body.messages[0].id)
+        await self._save(body.thread_id, thread)
         return thread
 
     def _response(self, body, thread):
@@ -268,11 +325,11 @@ class AgentService:
         )
         encoder = EventEncoder()
         terminal = None
-        delivered = False
+        committed = False
         model_stop = asyncio.Event()
 
         async def events():
-            nonlocal terminal, delivered
+            nonlocal terminal, committed
             started = monotonic()
             status = "cancelled"
             sent_start = False
@@ -296,9 +353,21 @@ class AgentService:
                         or outcome.type != "interrupt"
                         or len(outcome.interrupts) == 1
                     ):
+                        async with self.lock:
+                            if thread.stop.is_set():
+                                return
+                            thread.pending = None
+                            thread.paused_run = None
+                            if outcome is not None and outcome.type == "interrupt":
+                                thread.pending = outcome.interrupts[0].id
+                                thread.paused_run = body.run_id
+                                thread.expires = time() + INTERRUPT_TTL
+                            thread.touched = time()
+                            thread.active = None
+                            await self._save(body.thread_id, thread)
+                            committed = True
                         status = "ok"
                         yield encoder.encode(terminal)
-                        delivered = True
                         return
                 status = "agent_run_failed"
             except TimeoutError:
@@ -321,18 +390,13 @@ class AgentService:
             yield encoder.encode(RunErrorEvent(code=status, message="Agent run failed."))
 
         async def release():
-            if not delivered or thread.stop.is_set():
-                self._close_thread(body.thread_id, thread)
-                return
-            outcome = terminal.outcome
-            thread.pending = None
-            thread.paused_run = None
-            if outcome is not None and outcome.type == "interrupt":
-                thread.pending = outcome.interrupts[0].id
-                thread.paused_run = body.run_id
-                thread.expires = monotonic() + INTERRUPT_TTL
-            thread.touched = monotonic()
-            thread.active = None
+            if not committed:
+                async with self.lock:
+                    try:
+                        await self._close_thread(body.thread_id, thread)
+                    except (PostgresError, PoolTimeout, OSError) as error:
+                        self.graph = None
+                        logger.error("board_agent checkpoint_error=%s", type(error).__name__)
 
         return AgentStream(events(), thread.stop, model_stop, release)
 
@@ -341,25 +405,55 @@ class AgentService:
         async def health(actor: Actor):
             if self.graph is None:
                 raise HTTPException(503, "agent_unavailable")
-            return {"status": "ready", "checkpoint": "memory"}
+            return {"status": "ready", "checkpoint": "postgres" if self.storage else "memory"}
 
         @router.post(path)
         async def run(body: RunAgentInput, actor: AgentActor):
             if self.graph is None:
                 raise HTTPException(503, "agent_unavailable")
             _validate(body)
-            thread = self._admit(body, actor.user_id)
+            async with self.lock:
+                if self.graph is None:
+                    raise HTTPException(503, "agent_unavailable")
+                try:
+                    thread = await self._admit(body, actor.user_id)
+                except (PostgresError, PoolTimeout, OSError) as error:
+                    self.graph = None
+                    logger.error("board_agent checkpoint_error=%s", type(error).__name__)
+                    raise HTTPException(503, "agent_unavailable") from None
             return self._response(body, thread)
 
         @router.post(path + "/{thread_id}/runs/{run_id}/cancel", status_code=204)
         async def cancel(thread_id: str, run_id: str, actor: AgentActor):
-            thread = self.threads.get(thread_id)
-            if thread is None or thread.owner != actor.user_id:
-                raise HTTPException(404, "agent_thread_not_found")
-            if thread.active == run_id:
-                thread.stop.set()
-            elif thread.active is None and thread.paused_run == run_id:
-                self._close_thread(thread_id, thread)
-            else:
-                raise HTTPException(409, "agent_run_not_active")
+            async with self.lock:
+                thread = self.threads.get(thread_id)
+                if thread is None or thread.owner != actor.user_id:
+                    raise HTTPException(404, "agent_thread_not_found")
+                if thread.active == run_id:
+                    thread.stop.set()
+                elif thread.active is None and thread.paused_run == run_id:
+                    try:
+                        await self._close_thread(thread_id, thread)
+                    except (PostgresError, PoolTimeout, OSError) as error:
+                        self.graph = None
+                        logger.error("board_agent checkpoint_error=%s", type(error).__name__)
+                        raise HTTPException(503, "agent_unavailable") from None
+                else:
+                    raise HTTPException(409, "agent_run_not_active")
+            return Response(status_code=204)
+
+        @router.delete(path + "/{thread_id}", status_code=204)
+        async def delete(thread_id: str, actor: AgentActor):
+            async with self.lock:
+                thread = self.threads.get(thread_id)
+                if thread is None or thread.owner != actor.user_id:
+                    raise HTTPException(404, "agent_thread_not_found")
+                if thread.active:
+                    raise HTTPException(409, "agent_thread_busy")
+                try:
+                    await self._close_thread(thread_id, thread)
+                except (PostgresError, PoolTimeout, OSError) as error:
+                    self.graph = None
+                    logger.error("board_agent checkpoint_error=%s", type(error).__name__)
+                    raise HTTPException(503, "agent_unavailable") from None
             return Response(status_code=204)
