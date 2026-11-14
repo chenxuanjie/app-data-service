@@ -1,14 +1,11 @@
 # 桌游 Agent 的 AG-UI 接口
 
-本地联调入口为 `POST /v1/apps/board_game_agent/ai/agent`。浏览器同源入口加 `/api` 前缀。依赖锁定 `ag-ui-langgraph 0.0.47` 和 `ag-ui-protocol 1.0.0`，沿用 FastAPI `0.148.0`。适配器依赖 MIT 许可，版本升级时应复验中断、流关闭和事件转换。 [AG-UI Python 适配器](https://pypi.org/project/ag-ui-langgraph/0.0.47/)
+入口为 `POST /v1/apps/board_game_agent/ai/agent`。Web 同源入口加 `/api` 前缀。采用 `ag-ui-langgraph 0.0.47` 和 `ag-ui-protocol 1.0.0`。原生端使用应用 Bearer，Web 支持现有 Bearer 或同源 Cookie + CSRF。
 
-- 原生端使用现有桌游应用访问令牌。Web 可以使用现有浏览器流程签发的访问令牌，也可以发送同源 Cookie 和 `X-CSRF-Token`。带 Bearer 的 `GET /health` 检查 Agent 是否已初始化，路径相对于上述入口。
-- 每次新回合只提交一条纯文本用户消息，带稳定的消息 ID、新的 `runId` 和同一个 `threadId`。SSE 输出文本、工具和运行终止事件。客户端通过 `tools` 声明支持的工具名。服务端只绑定白名单内且已声明的工具，并使用服务端的参数定义。
-- 客户端只在 `RUN_FINISHED.outcome.type == "interrupt"`、原因为 `client_tool` 且与本次工具调用 ID 对应时执行。通用工具的名称和已校验参数来自 `metadata.langgraph.raw`。客户端校验本地权限及参数后，用新 `runId` 和相同 `threadId` 重新 POST，`messages: []`，`resume: [{"interruptId":"…","status":"resolved","payload":{"status":"succeeded","code":"data_read","data":{}}}]`。失败使用 `status: "failed"` 和失败码。旧排行榜工具继续接受 `{"status":"opened"}` 等回执。
-- 服务端将每轮已声明的工具和待恢复工具存在线程状态中。恢复请求不能扩大能力范围，回执必须与待恢复中断匹配。模型可在恢复后调用下一项工具。
-- 停止 Run 使用 `POST /{threadId}/runs/{runId}/cancel`，路径相对于 Agent 入口。断开活动 SSE 或显式停止会取消模型请求并关闭当前线程。迟到的恢复请求会被拒绝。HTTP 410 后可用新线程重试。
-- 内存线程供本地单进程联调使用。每线程只允许一个活动 Run，最多 32 次请求，空闲 30 分钟后可回收。暂停结果在 5 分钟内有效。PostgreSQL Checkpoint 在阶段 5 接入。
+- 新轮提交一条用户消息和稳定 `threadId`，每个请求有独立 `runId`。新轮允许提交模型、推理档、服务档和资料模式。后台使用已登记的工具描述，不信任客户端上报的 schema。
+- 新线程可用 `history` 导入最近的已完成纯文本消息，最多 12 条和 24 KB。已有检查点继续使用服务端历史。模型上下文有独立预算，保留当前用户轮及完整工具调用链。
+- 客户端核对 `RUN_FINISHED.outcome` 中的中断与本轮工具 ID。执行本地操作后，使用 `resume[]` 回同一线程。已完成轮的相同末次回执重发会回放终态 SSE。不会再次执行工具。
+- `GET /{threadId}` 可查询当前用户轮的状态、待恢复中断或成功结果。`POST /{threadId}/runs/{runId}/cancel` 停止当前轮。保留之前成功的检查点。`DELETE /{threadId}` 清除会话。达到 32 个用户轮后，可调 `POST /{threadId}/renew` 重建已达上限且无挂起动作的线程。
+- 炸弹猫原有索引和引用验证仍在应用侧完成。限定的一次性规则请求可携带已验证的 PDF 内容交由 LangGraph 生成，不提供客户端或业务工具。账号旧生成转发已退役。
 
-本地测试通过真实 HTTP 验证服务端工具事件、导航中断恢复、取消与断开、线程归属和重复恢复。真实 Loomex 验证了 `open_rankings` 暂停，收到模拟客户端结果后答复「收藏排行榜已打开」。Flutter 实际导航在阶段 4 联调。
-
-当前适配器与锁定的 LangGraph/Pydantic 组合会产生配置接口弃用和运行上下文序列化警告。本地协议测试覆盖了受影响的中断和恢复路径。
+带鉴权的 `GET /health` 返回 Agent 是否准备就绪和检查点类型。适配器升级时复验中断、流关闭和事件转换。 [AG-UI Python 适配器](https://pypi.org/project/ag-ui-langgraph/0.0.47/)

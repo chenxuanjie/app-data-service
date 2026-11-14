@@ -12,6 +12,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_model_call
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
 from langchain_core.tools import StructuredTool, tool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 OPEN_RANKINGS = "open_rankings"
 DEFAULT_MODEL = "gpt-6.1-sol"
 run_stop = ContextVar[asyncio.Event | None]("board_agent_run_stop", default=None)
+run_files: ContextVar[tuple[dict, ...]] = ContextVar("board_agent_rule_files", default=())
 RUN_TIMEOUT_SECONDS = 90
 RUN_STEP_LIMIT = 12
 SYSTEM_PROMPT = (
@@ -44,6 +46,9 @@ SYSTEM_PROMPT = (
     "Ask for clarification if a target is ambiguous. "
     "An explicit user request is enough for favorites, votes and posting a comment. "
     "Use the comment text provided by the user. "
+    "If a write returns user_authorization_required, ask for a direct command naming the game "
+    "and, for a new comment, the exact text after a colon. "
+    "Do not try a different write tool to work around this result. "
     "If the user explicitly asks to delete an identified comment, call delete_game_comment. "
     "The client will show the confirmation dialog before deleting it. "
     "Ask a chat question only if the request or target is ambiguous. "
@@ -60,6 +65,7 @@ class ClientCapabilities(TypedDict, total=False):
     client_tool_names: list[str]
     open_rankings: bool
     thread_id: str
+    run_options: dict
 
 
 @tool
@@ -234,14 +240,87 @@ CLIENT_TOOL_NAMES = frozenset(tool.name for tool in CLIENT_TOOLS)
 
 @wrap_model_call
 async def _client_tool_capability(request, handler):
-    request = request.override(
-        tools=[
-            t
-            for t in request.tools
-            if t.name not in CLIENT_TOOL_NAMES or _client_enabled(request.runtime, t.name)
-        ],
-        model_settings={**request.model_settings, "parallel_tool_calls": False},
+    options = (request.runtime.context or {}).get("run_options", {})
+    settings = {**request.model_settings, "parallel_tool_calls": False}
+    if options.get("model"):
+        request = request.override(
+            model=request.model.model_copy(
+                update={
+                    "model_name": options["model"],
+                    "reasoning": {"effort": options["effort"]} if "effort" in options else None,
+                    "service_tier": options.get("tier"),
+                }
+            )
+        )
+    recent = request.messages[
+        max(
+            (i for i, message in enumerate(request.messages) if isinstance(message, HumanMessage)),
+            default=0,
+        ) :
+    ]
+    messages = trim_messages(
+        request.messages,
+        max_tokens=96000,
+        token_counter=lambda items: sum(
+            len(str(message.content).encode("utf-8")) for message in items
+        ),
+        start_on="human",
     )
+    if len(messages) < len(recent):
+        raise ValueError("agent_context_budget")
+    system = request.system_message
+    game = options.get("game")
+    only = options.get("knowledge_only", False)
+    indexed = options.get("indexed_context")
+    if indexed:
+        system = SystemMessage(content=indexed)
+        if files := run_files.get():
+            latest = messages[-1]
+            messages = [
+                *messages[:-1],
+                latest.model_copy(
+                    update={
+                        "content": [
+                            {"type": "input_text", "text": latest.text},
+                            *(
+                                {
+                                    "type": "input_file",
+                                    "filename": file["filename"],
+                                    "file_data": "data:application/pdf;base64," + file["data"],
+                                }
+                                for file in files
+                            ),
+                        ]
+                    }
+                ),
+            ]
+    elif game or only:
+        scope = f" Current game title: {game!r}." if game else ""
+        instruction = (
+            " Answer only from rule evidence returned for this turn. If evidence is unavailable or "
+            "insufficient, say so. Do not use general knowledge."
+            if only
+            else " For questions about this game's rules, retrieve rule evidence first."
+        )
+        system = SystemMessage(content=SYSTEM_PROMPT + scope + instruction)
+    tools = [
+        tool
+        for tool in request.tools
+        if not indexed
+        and (not only or tool.name == "get_rule_evidence")
+        and (tool.name not in CLIENT_TOOL_NAMES or _client_enabled(request.runtime, tool.name))
+    ]
+    if not tools:
+        settings.pop("parallel_tool_calls", None)
+    if only and tools and isinstance(messages[-1], HumanMessage):
+        settings["tool_choice"] = "get_rule_evidence"
+    request = request.override(
+        messages=messages,
+        system_message=system,
+        tools=tools,
+        model_settings=settings,
+    )
+    started = monotonic()
     try:
         stop = run_stop.get()
         if stop is None:
@@ -261,6 +340,12 @@ async def _client_tool_capability(request, handler):
     except (OpenAIError, ValueError) as error:
         logger.warning("board_agent model_error=%s", type(error).__name__)
         raise RuntimeError("model_request_failed") from None
+    finally:
+        logger.info(
+            "board_agent model=%s provider_call_ms=%d",
+            getattr(request.model, "model_name", type(request.model).__name__),
+            (monotonic() - started) * 1000,
+        )
 
 
 def loomex_model(client: httpx.AsyncClient) -> ChatOpenAI:

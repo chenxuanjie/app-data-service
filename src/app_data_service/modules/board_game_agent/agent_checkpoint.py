@@ -1,6 +1,6 @@
 """Dedicated PostgreSQL storage for the board Agent and its thread registry."""
 
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -49,16 +49,20 @@ def setup_checkpoint_database(dsn, role):
 
 
 class PostgresThreads:
-    def __init__(self, connection, saver):
-        self.connection = connection
+    def __init__(self, dsn, saver, lease):
+        self.dsn = dsn
         self.saver = saver
+        self.lease = lease
+        self.connection = None
 
-    @classmethod
-    @asynccontextmanager
-    async def open(cls, dsn):
-        # Keep this session for the service lifetime. The same connection
-        # performs registry writes so loss of the lock also stops admission.
-        async with await AsyncConnection.connect(dsn, **CONNECTION) as connection:
+    async def reconnect(self):
+        if self.connection and not self.connection.closed:
+            return
+        await self.lease.aclose()
+        async with AsyncExitStack() as lease:
+            connection = await lease.enter_async_context(
+                await AsyncConnection.connect(self.dsn, **CONNECTION)
+            )
             row = await (
                 await connection.execute(
                     "SELECT pg_try_advisory_lock(%s) AS locked", (SERVICE_LOCK,)
@@ -74,14 +78,26 @@ class PostgresThreads:
                 ).fetchone()
             )["business"]:
                 raise ValueError("agent_checkpoint_requires_dedicated_database")
-            async with AsyncConnectionPool(
+            self.connection = connection
+            await self.lease.enter_async_context(lease.pop_all())
+
+    @classmethod
+    @asynccontextmanager
+    async def open(cls, dsn):
+        async with (
+            AsyncExitStack() as lease,
+            AsyncConnectionPool(
                 dsn, kwargs=CONNECTION, min_size=1, max_size=4, timeout=5, open=False
-            ) as pool:
-                await pool.wait(timeout=5)
-                saver = AsyncPostgresSaver(
-                    pool, serde=JsonPlusSerializer(allowed_msgpack_modules=None)
-                )
-                yield cls(connection, saver)
+            ) as pool,
+        ):
+            storage = cls(
+                dsn,
+                AsyncPostgresSaver(pool, serde=JsonPlusSerializer(allowed_msgpack_modules=None)),
+                lease,
+            )
+            await storage.reconnect()
+            await pool.wait(timeout=5)
+            yield storage
 
     async def load(self):
         rows = await (

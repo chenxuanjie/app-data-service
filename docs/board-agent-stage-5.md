@@ -1,6 +1,6 @@
 # 桌游 Agent Checkpoint 部署准备
 
-阶段 5 使用 `AsyncPostgresSaver` 保存 LangGraph 状态，并持久保存线程归属、运行与消息去重记录、待恢复中断。现有 Flutter 会话继续负责聊天展示。Flutter 进程运行期间可沿用线程标识，API 进程重启后可继续已完成的会话或恢复已提交的中断。Flutter 完全退出后重新打开时会分配新线程。被重启打断且未提交终态的运行会在启动时关闭。
+阶段 5 使用 `AsyncPostgresSaver` 保存 LangGraph 状态，并持久保存线程归属、运行与消息去重记录、待恢复中断。Flutter 通过本地会话身份和版本稳定识别线程。API 重启后保留已成功轮次和已提交的工具中断。启动时释放未完成运行。停止当前生成只丢弃未提交部分，显式清空才删除线程状态。
 
 ## 准备专用数据库
 
@@ -18,9 +18,9 @@ API 服务只注入运行角色的 `APP_DATA_BOARD_AGENT_CHECKPOINT_DSN`。两�
 
 ## 保留与删除
 
-- 每线程最多 32 次请求，最多 64 个在册线程。已完成会话空闲 30 分钟后在下一次 Agent 请求或重启时清理。中断结果有效期为 5 分钟。
-- 已登录线程所有者可请求 `DELETE /v1/apps/board_game_agent/ai/agent/{threadId}`，清除该线程的 Checkpoint。Flutter 清空或删除本地会话时尝试删除本进程已知的服务端线程，离线时由到期清理收尾。
-- 活动运行或待恢复工具中断可用原取消入口停止。重复恢复、跨账号访问和已取消的恢复会被拒绝。
+- 每线程最多 32 个用户轮及每轮最多 8 次恢复。最多 64 个在册线程。空闲 30 分钟后可回收，通过定时和新轮准入按批清理。中断结果有效期为 5 分钟。
+- 已登录线程所有者可请求 `DELETE /v1/apps/board_game_agent/ai/agent/{threadId}`，清除该线程的 Checkpoint。Flutter 清空或删除本地会话时尝试删除该应用会话对应的服务端线程，离线时由到期清理收尾。
+- 活动运行或待恢复工具中断可用原取消入口停止。已完成轮的相同末次回执重发会回放终态。跨账号访问和已取消的恢复会被拒绝。
 
 依赖锁定 `langgraph-checkpoint-postgres 3.2.0`（MIT）与 `psycopg-pool 3.3.3`（LGPL）。本机 Windows 使用兼容 psycopg 的 Selector 事件循环测试，NAS 使用 Linux。连接、连接池、SQL 和锁等待均设有时限。升级时复验初始化、运行角色权限、中断恢复和线程清理。 [PostgreSQL Checkpointer](https://pypi.org/project/langgraph-checkpoint-postgres/3.2.0/)
 

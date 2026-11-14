@@ -163,12 +163,12 @@ def test_agui_stream_tool_and_resume(monkeypatch):
             resumed = events(await client.post(PATH, json=result))
             assert resumed[-1]["type"] == "RUN_FINISHED"
             assert "Rankings opened." in str(resumed)
-            assert (await client.post(PATH, json=result)).status_code == 409
+            assert events(await client.post(PATH, json=result))[-1]["type"] == "RUN_FINISHED"
 
             paused_again = events(await client.post(PATH, json=body("stop", navigation=True)))
             pending_id = paused_again[-1]["outcome"]["interrupts"][0]["id"]
             assert (await client.post(PATH + "/thread/runs/stop/cancel")).status_code == 204
-            assert (await client.post(PATH, json=resume("late", pending_id))).status_code == 410
+            assert (await client.post(PATH, json=resume("late", pending_id))).status_code == 409
             failure = events(await client.post(PATH, json=body("failed", thread="new-thread")))
             assert failure[-1]["type"] == "RUN_ERROR"
             assert failure[-1]["code"] == "agent_run_failed"
@@ -267,6 +267,8 @@ def test_postgres_checkpoint_survives_restart_and_isolates_threads(db, monkeypat
         setup_checkpoint_database(dsn("migrator"), "app_runtime")
         async with endpoint(monkeypatch, provider) as (client, service):
             assert (await client.get(PATH + "/health")).json()["checkpoint"] == "postgres"
+            await service.storage.connection.close()
+            assert (await client.get(PATH + "/health")).json()["checkpoint"] == "postgres"
             assert (
                 events(await client.post(PATH, json=body("remember")))[-1]["type"] == "RUN_FINISHED"
             )
@@ -280,7 +282,7 @@ def test_postgres_checkpoint_survives_restart_and_isolates_threads(db, monkeypat
                 await client.post(PATH, json=result, headers={"authorization": "bob"})
             ).status_code == 404
             assert events(await client.post(PATH, json=result))[-1]["type"] == "RUN_FINISHED"
-            assert (await client.post(PATH, json=result)).status_code == 409
+            assert events(await client.post(PATH, json=result))[-1]["type"] == "RUN_FINISHED"
             assert (
                 events(await client.post(PATH, json=body("follow-up")))[-1]["type"]
                 == "RUN_FINISHED"
@@ -334,7 +336,7 @@ def test_agui_disconnect_and_cancel_release_active_run(monkeypatch):
                 await asyncio.wait_for(started.wait(), 4)
                 assert (await client.post(PATH, json=body("concurrent"))).status_code == 409
             await asyncio.wait_for(cancelled.wait(), 4)
-            await until(lambda: service.threads["thread"].closed)
+            await until(lambda: service.threads["thread"].active is None)
             started.clear()
             cancelled.clear()
             async with client.stream("POST", PATH, json=body("cancel", thread="other")) as response:
@@ -342,7 +344,7 @@ def test_agui_disconnect_and_cancel_release_active_run(monkeypatch):
                 await asyncio.wait_for(started.wait(), 4)
                 assert (await client.post(PATH + "/other/runs/cancel/cancel")).status_code == 204
                 await asyncio.wait_for(cancelled.wait(), 4)
-            await until(lambda: service.threads["other"].closed)
+            await until(lambda: service.threads["other"].active is None)
             started.clear()
             cancelled.clear()
             monkeypatch.setattr(agent_http, "RUN_TIMEOUT_SECONDS", 0.3)
@@ -350,7 +352,7 @@ def test_agui_disconnect_and_cancel_release_active_run(monkeypatch):
             assert timed_out[-1]["code"] == "agent_timeout"
             assert started.is_set()
             await asyncio.wait_for(cancelled.wait(), 4)
-            await until(lambda: service.threads["deadline"].closed)
+            await until(lambda: service.threads["deadline"].active is None)
 
     asyncio.run(scenario())
 
@@ -393,3 +395,79 @@ def test_agui_real_application_bearer_and_browser_csrf(db, accounts, monkeypatch
             assert client.post(PATH, json=body("revoked"), headers=token).status_code == 401
         finally:
             client.portal.call(upstream.aclose)
+
+
+def test_last_turn_can_resume_and_cancel_preserves_previous_checkpoint(monkeypatch):
+    responses = iter(
+        [
+            model_stream(["Remember Cabo."]),
+            navigation_stream(),
+            navigation_stream(),
+            model_stream(["Cabo is still here."]),
+        ]
+    )
+    calls = []
+
+    def provider(request):
+        calls.append(json.loads(request.content))
+        return next(responses)
+
+    async def scenario():
+        monkeypatch.setattr(agent_http, "MAX_TURNS_PER_THREAD", 3)
+        async with endpoint(monkeypatch, provider) as (client, service):
+            request = body("first")
+            request["options"] = {"model": "gpt-6.1-terra", "effort": "medium", "tier": "fast"}
+            assert events(await client.post(PATH, json=request))[-1]["type"] == "RUN_FINISHED"
+            checkpoint = service.threads["thread"].committed_checkpoint
+            paused = await client.post(PATH, json=body("second", navigation=True))
+            assert events(paused)[-1]["outcome"]["type"] == "interrupt"
+            assert (await client.post(PATH + "/thread/runs/second/cancel")).status_code == 204
+            assert service.threads["thread"].committed_checkpoint == checkpoint
+            paused = await client.post(PATH, json=body("third", navigation=True))
+            pending = events(paused)[-1]["outcome"]["interrupts"][0]["id"]
+            assert (await client.get(PATH + "/thread")).json()["state"] == "waiting"
+            assert (
+                await client.get(PATH + "/thread", headers={"authorization": "bob"})
+            ).status_code == 404
+            done = events(await client.post(PATH, json=resume("resume-last", pending)))
+            assert done[-1]["type"] == "RUN_FINISHED"
+            assert (await client.get(PATH + "/thread")).json()["text"] == "Cabo is still here."
+            assert (await client.post(PATH, json=body("fourth"))).json()[
+                "detail"
+            ] == "agent_thread_limit"
+        assert calls[0]["model"] == "gpt-6.1-terra"
+        assert calls[0]["reasoning"]["effort"] == "medium"
+        assert calls[0]["service_tier"] == "fast"
+        assert "Remember Cabo." in str(calls[-1]["input"])
+
+    asyncio.run(scenario())
+
+
+def test_indexed_evidence_uses_agent_without_tools_or_durable_thread(monkeypatch):
+    payloads = []
+
+    def provider(request):
+        payloads.append(json.loads(request.content))
+        return model_stream(["fixture answer"])
+
+    async def scenario():
+        async with endpoint(monkeypatch, provider) as (client, service):
+            req = body("indexed")
+            req["options"] = {
+                "indexed_context": "Use published rule evidence.",
+                "transient": True,
+                "rule_files": [{"filename": "rules.pdf", "data": "JVBERi0xLjQK"}],
+            }
+            req["history"] = [
+                {"id": "before", "role": "user", "content": "Previous public question."},
+            ]
+            response = await client.post(PATH, json=req)
+            assert events(response)[-1]["type"] == "RUN_FINISHED"
+            assert not service.threads
+            assert not await service.saver.aget_tuple({"configurable": {"thread_id": "thread"}})
+        assert not payloads[0].get("tools")
+        assert "data:application/pdf;base64,JVBERi0xLjQK" in str(payloads[0]["input"])
+        assert "Use published rule evidence." in str(payloads[0]["input"])
+        assert "Previous public question." in str(payloads[0]["input"])
+
+    asyncio.run(scenario())
