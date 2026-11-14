@@ -65,6 +65,8 @@ def test_responses_graph_streams_tools_and_checkpoints(monkeypatch, capsys):
     def provider(request):
         assert request.url.path == "/v1/responses"
         body = json.loads(request.content)
+        assert body["model"] == "gpt-6.1-sol"
+        assert body["reasoning"]["effort"] == "low"
         assert body["store"] is False and body["stream"] is True
         assert "previous_response_id" not in body
         assert [t["name"] for t in body["tools"]] == ["get_favorite_rankings"]
