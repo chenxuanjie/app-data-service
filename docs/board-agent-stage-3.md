@@ -8,4 +8,6 @@
 - `GET /{threadId}` 可查询当前用户轮的状态、待恢复中断或成功结果。`POST /{threadId}/runs/{runId}/cancel` 停止当前轮。保留之前成功的检查点。`DELETE /{threadId}` 清除会话。达到 32 个用户轮后，可调 `POST /{threadId}/renew` 重建已达上限且无挂起动作的线程。
 - 炸弹猫原有索引和引用验证仍在应用侧完成。限定的一次性规则请求可携带已验证的 PDF 内容交由 LangGraph 生成，不提供客户端或业务工具。账号旧生成转发已退役。
 
+`GET /models` 保留同一 Agent 路径下的账号模型发现。旧 `/ai/loomex/v1/*` 路径全部返回 404。
+
 带鉴权的 `GET /health` 返回 Agent 是否准备就绪和检查点类型。适配器升级时复验中断、流关闭和事件转换。 [AG-UI Python 适配器](https://pypi.org/project/ag-ui-langgraph/0.0.47/)

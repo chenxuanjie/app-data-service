@@ -375,6 +375,11 @@ def test_agui_real_application_bearer_and_browser_csrf(db, accounts, monkeypatch
     with TestClient(app, base_url=origin, headers={"origin": origin}) as client:
         try:
             assert client.post(PATH, json=body("unauthenticated")).status_code == 401
+            assert client.get(PATH + "/models").status_code == 401
+            assert client.get(PATH.replace("/agent", "/loomex/v1/models")).status_code == 404
+            paths = client.get("/openapi.json").json()["paths"]
+            assert PATH + "/models" in paths
+            assert not any("/ai/loomex/" in path for path in paths)
             boot = client.post(auth + "/browser/bootstrap", json={})
             client.headers["X-CSRF-Token"] = boot.json()["csrf_token"]
             login = client.post(
@@ -469,5 +474,21 @@ def test_indexed_evidence_uses_agent_without_tools_or_durable_thread(monkeypatch
         assert "data:application/pdf;base64,JVBERi0xLjQK" in str(payloads[0]["input"])
         assert "Use published rule evidence." in str(payloads[0]["input"])
         assert "Previous public question." in str(payloads[0]["input"])
+
+    asyncio.run(scenario())
+
+
+def test_deleted_threads_do_not_block_new_threads(monkeypatch):
+    monkeypatch.setattr(agent_http, "MAX_THREADS", 1)
+
+    async def scenario():
+        async with endpoint(monkeypatch, lambda _: model_stream(["Fixture."])) as (client, _):
+            first = await client.post(PATH, json=body("one", thread="old"))
+            assert events(first)[-1]["type"] == "RUN_FINISHED"
+            assert (await client.post(PATH, json=body("two", thread="new"))).status_code == 503
+            assert (await client.delete(PATH + "/old")).status_code == 204
+            assert (await client.post(PATH, json=body("late", thread="old"))).status_code == 410
+            second = await client.post(PATH, json=body("two", thread="new"))
+            assert events(second)[-1]["type"] == "RUN_FINISHED"
 
     asyncio.run(scenario())

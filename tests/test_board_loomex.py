@@ -11,6 +11,8 @@ from app_data_service.dependencies import RequestScope, identity
 from app_data_service.modules.board_game_agent import loomex
 
 CLIENT = httpx.AsyncClient
+AGENT_MODELS = "/v1/apps/board_game_agent/ai/agent/models"
+RETIRED_PREFIX = "/v1/apps/board_game_agent/ai/loomex/v1"
 BODY = {"model": "gpt-6-sol", "input": "fixture"}
 
 
@@ -53,7 +55,7 @@ def application(monkeypatch, provider):
 
     monkeypatch.setattr(loomex.httpx, "AsyncClient", create_client)
     app, router = FastAPI(), APIRouter()
-    loomex.install(router)
+    loomex.install_model_discovery(router, AGENT_MODELS)
     app.include_router(router)
     app.dependency_overrides[identity] = lambda: RequestScope("fixture", "board_game_agent", None)
     return app
@@ -65,7 +67,7 @@ def test_discovery_remains_and_generation_is_retired(monkeypatch):
         provider = Provider()
         async with serving(application(monkeypatch, provider)) as origin:
             async with CLIENT(base_url=origin, timeout=5) as client:
-                response = await client.get(loomex.PREFIX + "/models")
+                response = await client.get(AGENT_MODELS)
                 assert response.status_code == 200
                 assert response.headers["cache-control"] == "no-store"
                 assert response.json() == {
@@ -79,8 +81,9 @@ def test_discovery_remains_and_generation_is_retired(monkeypatch):
                 assert (
                     provider.requests[0].headers["authorization"] == "Bearer fixture-not-a-real-key"
                 )
+                assert (await client.get(RETIRED_PREFIX + "/models")).status_code == 404
                 for operation in ("responses", "responses/compact", "chat/completions"):
-                    retired = await client.post(loomex.PREFIX + "/" + operation, json=BODY)
+                    retired = await client.post(RETIRED_PREFIX + "/" + operation, json=BODY)
                     assert retired.status_code == 404
                 assert len(provider.requests) == 1
                 await until(provider.all_closed)
@@ -96,11 +99,11 @@ def test_model_discovery_errors_release_capacity(monkeypatch, mode, status):
         async with serving(application(monkeypatch, provider)) as origin:
             async with CLIENT(base_url=origin, timeout=5) as client:
                 for _ in range(9):
-                    response = await client.get(loomex.PREFIX + "/models")
+                    response = await client.get(AGENT_MODELS)
                     assert response.status_code == status
                     assert "private upstream message" not in response.text
                 provider.mode = "success"
-                assert (await client.get(loomex.PREFIX + "/models")).status_code == 200
+                assert (await client.get(AGENT_MODELS)).status_code == 200
                 await until(provider.all_closed)
 
     asyncio.run(scenario())

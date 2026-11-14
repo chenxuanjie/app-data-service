@@ -56,6 +56,7 @@ ID = re.compile(r"[A-Za-z0-9_-]{1,96}")
 THREAD_TTL = 1800
 INTERRUPT_TTL = 300
 MAX_THREADS = 64
+MAX_THREAD_RECORDS = 1024
 MAX_RUNS = 8
 MAX_TURNS_PER_THREAD = 32
 MAX_RESUMES_PER_TURN = 8
@@ -514,7 +515,10 @@ class AgentService:
         if sum(t.active is not None for t in self.threads.values()) >= MAX_RUNS:
             raise HTTPException(503, "agent_busy")
         if thread is None:
-            if len(self.threads) >= MAX_THREADS:
+            if (
+                len(self.threads) >= MAX_THREAD_RECORDS
+                or sum(not entry.closed for entry in self.threads.values()) >= MAX_THREADS
+            ):
                 raise HTTPException(503, "agent_thread_capacity")
             thread = self.threads[body.thread_id] = Thread(owner, now)
         previous = thread.snapshot()

@@ -18,7 +18,7 @@ from app_data_service.store import user_transaction
 from . import business
 from .agent_http import AgentService
 from .catalog_routes import install as install_catalog
-from .loomex import install as install_loomex
+from .loomex import install_model_discovery
 
 PREFIX = "/v1/apps/board_game_agent"
 
@@ -26,8 +26,9 @@ PREFIX = "/v1/apps/board_game_agent"
 def build_router(runtime):
     agent = AgentService(runtime.engine)
     router = application_router("board_game_agent", lifespan=agent.lifespan)
-    agent.install(router, PREFIX + "/ai/agent")
-    install_loomex(router)
+    agent_path = PREFIX + "/ai/agent"
+    install_model_discovery(router, agent_path + "/models")
+    agent.install(router, agent_path)
     install_catalog(router, runtime)
 
     @router.post(PREFIX + "/community/sync-credentials")

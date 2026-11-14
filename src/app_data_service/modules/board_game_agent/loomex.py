@@ -11,7 +11,6 @@ from fastapi.responses import JSONResponse
 
 from app_data_service.dependencies import Actor
 
-PREFIX = "/v1/apps/board_game_agent/ai/loomex/v1"
 MODEL_LIST_MAX_BYTES = 512 * 1024
 
 
@@ -30,7 +29,7 @@ def loomex_base_url():
     return base
 
 
-def install(router):
+def install_model_discovery(router, path):
     # Settings belong to this application module, not authentication or another app.
     key = os.environ.get("APP_DATA_BOARD_LOOMEX_API_KEY", "").strip()
     base = loomex_base_url()
@@ -46,7 +45,7 @@ def install(router):
         except TimeoutError:
             raise HTTPException(503, "loomex_busy") from None
 
-    @router.get(PREFIX + "/models")
+    @router.get(path)
     async def list_models(actor: Actor):
         configured()
         await acquire_capacity()
