@@ -11,6 +11,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from app_data_service.cli import local_config, migrate
 from app_data_service.config import make_engine
 from app_data_service.models import App, Dataset, DatasetMember, User
+from app_data_service.modules.registry import installed_applications
+from app_data_service.registration import register_application
 
 
 @pytest.fixture(scope="session")
@@ -49,6 +51,8 @@ def db():
         by_role = {role: make_engine(url) for role, url in test_urls.items()}
         engines.extend(by_role.values())
         with by_role["migrator"].begin() as connection:
+            for definition in installed_applications().definitions:
+                register_application(connection, definition)
             connection.execute(
                 sa.insert(App).values(id="other", name="其他测试应用", schema_name="other")
             )

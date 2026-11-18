@@ -80,6 +80,20 @@ def test_board_login_does_not_create_a_zheri_ledger(authenticated, db):
         assert c.scalar(sa.select(Dataset.id)) == board["dataset_id"]
 
 
+def test_xy_car_login_is_its_own_identity_scope(authenticated):
+    client, _, authority, _ = authenticated
+    account = login(client, "xy_car_app")
+    assert account["dataset_id"] is None
+    assert account["dataset_kind"] is None
+    assert authority.claims(account["access_token"])["app_id"] == "xy_car_app"
+    payload = {"refresh_token": account["refresh_token"]}
+    assert client.post(path("board_game_agent", "/auth/refresh"), json=payload).status_code == 401
+    response = client.post(path("xy_car_app", "/auth/refresh"), json=payload)
+    assert response.status_code == 200
+    assert response.json()["app_id"] == "xy_car_app"
+    assert response.json()["dataset_id"] is None
+
+
 def test_forged_app_header_cannot_read_refresh_or_revoke_another_app(authenticated):
     client, *_ = authenticated
     zheri = login(client, "zheri")
