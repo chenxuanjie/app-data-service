@@ -2,8 +2,11 @@
 
 The XY-CAR module enables app-scoped account sessions and public installer
 releases. Migration `0019_xy_car_app` creates its schema. The API startup
-command runs `app-data register-applications` after the migration. The module
-does not create a personal dataset or add PowerSync business tables.
+command runs `app-data register-applications` after the migrations.
+Migration `0020_xy_car_station_data` adds private device settings and missions.
+The authenticated `/v1/apps/xy_car_app/station` routes expose `/device`,
+`/mission`, and `/missions`. PostgreSQL restricts those records to the signed-in
+XY-CAR user. Station data is served by the API and is outside PowerSync.
 
 Prepare new private deployment input from the active API Compose. The Web
 origin is `https://cznas.pp.ua:8090` and the NAS reverse proxy forwards to
