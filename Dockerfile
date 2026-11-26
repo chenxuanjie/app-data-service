@@ -26,4 +26,4 @@ COPY --link pyproject.toml alembic.ini ./
 COPY --link migrations ./migrations
 USER 10001:10001
 EXPOSE 8000
-CMD ["python", "-m", "uvicorn", "app_data_service.api:from_environment", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-proxy-headers"]
+CMD ["python", "-m", "uvicorn", "app_data_service.api:from_environment", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--ws", "websockets-sansio", "--ws-max-size", "16384", "--no-access-log", "--no-proxy-headers"]

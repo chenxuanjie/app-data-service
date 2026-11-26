@@ -5,6 +5,10 @@
 GitHub Actions 自动构建 API 并发布到 GHCR，镜像标签及群晖拉取更新方式见
 [GHCR 构建与更新](docs/ghcr.md)。本地离线镜像归档流程继续保留。
 
+XY-CAR 车辆发现由现有 API 进程提供。车辆通过 `/v1/agent/ws` 报到，每 5 秒上报网络状态，最后一次心跳后 15 秒过期。地面站读取 `GET /v1/vehicles`，通过 `/v1/client/ws?vehicle_id=...` 与所选车辆通信。这三个发现接口公开访问，账号与任务接口仍按现有应用配置运行。
+
+车辆在线表与 WebSocket 会话保存在内存中，部署使用单实例、单 worker，服务重启后车辆自动重连恢复。Docker 启动命令已显式指定该配置及 WebSocket 实现。Web 镜像只提供页面与 Nginx 反代，将外部 `/api/v1/...` 转到本服务的 `/v1/...`。更新时先应用后端镜像，再应用 Web 镜像。
+
 游客 APK/EXE 升级与独立机器发布权限见 [公开安装包发布](docs/public-releases.md)。P1 修复已由 API 0.5.1 交付 GHCR 和配套 Compose，包含迁移 0016、独立安装包存储与发布权限；通用 Android 架构统一为 any。WebDAV 备用发布保留。
 
 资料和程序版本的匿名实时发现见 [公开发布通知](docs/publication-notifications.md)。P2 需要迁移 0017、新 API 镜像及配套 PowerSync 规则，安装包和资料仍通过原权威 API 按需读取。

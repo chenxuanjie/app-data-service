@@ -26,6 +26,7 @@ from .dsm import DsmFailure, DsmProvider
 from .files import AccountFiles
 from .middleware import BoundedBody
 from .modules.registry import installed_applications
+from .modules.xy_car_app.discovery import build_router as discovery_router
 from .platform_routes import build_router
 from .runtime import ServiceRuntime
 from .sessions import SessionManager
@@ -130,6 +131,8 @@ def create_app(
             ):
                 raise ValueError("Every business route must be bound to its application module")
             app.include_router(router)
+    if any(definition.id == "xy_car_app" for definition in applications.definitions):
+        app.include_router(discovery_router())
     if proxy_upstream:
         install_sync_gateway(app, proxy_upstream)
 
